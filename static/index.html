@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Premium AI Job Application Assistant that automates your job search, matching, and applications." />
+  <title>AI Job Application Assistant</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%236366f1'/><text x='50' y='65' font-family='sans-serif' font-size='50' font-weight='bold' fill='white' text-anchor='middle'>JA</text></svg>" />
+  <link rel="stylesheet" href="/assets/css/app.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <div class="header-inner">
+        <div class="brand">
+          <div class="brand-icon">JA</div>
+          <div>
+            <h1>Job Application Assistant</h1>
+            <p class="subtitle">LangGraph · RAG · MCP · LangSmith</p>
+          </div>
+        </div>
+        <div class="header-badge" id="modeBadge">Loading...</div>
+      </div>
+    </header>
+
+    <main class="main">
+      <!-- Step 1: Upload & Profile -->
+      <section class="card fade-in" id="stepProfile">
+        <div class="card-header">
+          <span class="step-num">1</span>
+          <h2>Upload Resume & Set Preferences</h2>
+        </div>
+        <form id="profileForm" class="form-grid">
+          <div class="form-group">
+            <label for="fullName">Full Name</label>
+            <input type="text" id="fullName" required placeholder="John Doe" value="Jane Doe" />
+          </div>
+          <div class="form-group">
+            <label for="phone">Phone Number</label>
+            <input type="text" id="phone" required placeholder="+1 234 567 8900" value="+1 234 567 8900" />
+          </div>
+          <div class="form-group full">
+            <label for="email">Email</label>
+            <input type="email" id="email" required placeholder="you@example.com" value="demo@example.com" />
+          </div>
+          <div class="form-group full">
+            <label for="resumeFile">Resume PDF <span class="hint">(original file — never modified)</span></label>
+            <div class="file-drop" id="fileDrop">
+              <input type="file" id="resumeFile" accept=".pdf" required />
+              <p>Drop PDF here or click to browse</p>
+              <p class="file-name" id="fileName">No file selected</p>
+            </div>
+            <button type="button" class="btn-link" id="useSampleBtn">Use sample resume</button>
+          </div>
+          <div class="form-group">
+            <label for="role">Desired Role</label>
+            <input type="text" id="role" required value="Java Developer" />
+          </div>
+          <div class="form-group">
+            <label for="experience">Experience (years)</label>
+            <input type="number" id="experience" min="0" max="40" value="3" />
+          </div>
+          <div class="form-group full">
+            <label for="skills">Skills <span class="hint">(comma-separated)</span></label>
+            <input type="text" id="skills" value="Java, Spring Boot, Microservices, SQL" />
+          </div>
+          <div class="form-group full">
+            <label for="locations">Preferred Locations <span class="hint">(comma-separated)</span></label>
+            <input type="text" id="locations" value="Pune, Mumbai, Bangalore" />
+          </div>
+          <div class="form-actions full">
+            <button type="submit" class="btn btn-primary" id="uploadBtn">
+              <span class="btn-text">Upload Resume & Continue</span>
+              <span class="spinner hidden" id="uploadSpinner"></span>
+            </button>
+          </div>
+        </form>
+      </section>
+
+      <!-- Step 2: Run Workflow -->
+      <section class="card hidden fade-in" id="stepSearch">
+        <div class="card-header">
+          <span class="step-num">2</span>
+          <h2>Start Job Search & Apply</h2>
+        </div>
+        <div class="resume-info" id="resumeInfo"></div>
+        <p class="desc">
+          The supervisor agent will search jobs, match your resume via RAG, apply automatically where possible,
+          and email you a summary. Applications use your <strong>original PDF</strong> only.
+        </p>
+        <button class="btn btn-primary btn-lg" id="startSearchBtn">
+          <span class="btn-text">Start Job Application Workflow</span>
+          <span class="spinner hidden" id="searchSpinner"></span>
+        </button>
+      </section>
+
+      <!-- Step 3: Progress -->
+      <section class="card hidden fade-in" id="stepProgress">
+        <div class="card-header">
+          <span class="step-num">3</span>
+          <h2>Workflow Progress</h2>
+        </div>
+        <div class="pipeline">
+          <div class="pipeline-step" data-agent="job_search">
+            <div class="pipeline-dot"></div>
+            <span>Job Search</span>
+          </div>
+          <div class="pipeline-step" data-agent="resume_match">
+            <div class="pipeline-dot"></div>
+            <span>Resume Match</span>
+          </div>
+          <div class="pipeline-step" data-agent="application">
+            <div class="pipeline-dot"></div>
+            <span>Apply</span>
+          </div>
+          <div class="pipeline-step" data-agent="notification">
+            <div class="pipeline-dot"></div>
+            <span>Notify</span>
+          </div>
+        </div>
+        <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+        <p class="status-text" id="statusText">Initializing agents...</p>
+      </section>
+
+      <!-- Step 4: Results -->
+      <section class="card hidden fade-in" id="stepResults">
+        <div class="card-header">
+          <span class="step-num">4</span>
+          <h2>Application Summary</h2>
+        </div>
+        <div id="emailBanner" class="email-banner hidden"></div>
+        <div class="stats-grid" id="statsGrid">
+          <div class="stat success">
+            <div class="stat-value" id="statApplied">0</div>
+            <div class="stat-label">Applied</div>
+          </div>
+          <div class="stat warning">
+            <div class="stat-value" id="statManual">0</div>
+            <div class="stat-label">Manual Action</div>
+          </div>
+          <div class="stat danger">
+            <div class="stat-value" id="statFailed">0</div>
+            <div class="stat-label">Failed</div>
+          </div>
+          <div class="stat info">
+            <div class="stat-value" id="statMatched">0</div>
+            <div class="stat-label">Matched Jobs</div>
+          </div>
+        </div>
+
+        <div class="tabs">
+          <button class="tab active" data-tab="applications">Applications</button>
+          <button class="tab" data-tab="manual">Manual Actions</button>
+        </div>
+
+        <div class="tab-panel active" id="tabApplications">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Company</th><th>Job Title</th><th>Status</th><th>Score</th><th>Applied</th></tr>
+              </thead>
+              <tbody id="applicationsTable"><tr><td colspan="5" class="empty">No applications yet</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="tab-panel" id="tabManual">
+          <div class="manual-list" id="manualList">
+            <p class="empty">No manual actions required</p>
+          </div>
+        </div>
+
+        <div class="form-actions" style="margin-top: 1.5rem;">
+          <button class="btn btn-secondary" id="newRunBtn">Start New Run</button>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <p>Resume is never modified · Human-in-the-loop for CAPTCHA/login · Max 40 applications/day</p>
+    </footer>
+  </div>
+
+  <div class="toast-container" id="toastContainer"></div>
+  <script src="/assets/js/app.js"></script>
+</body>
+</html>
