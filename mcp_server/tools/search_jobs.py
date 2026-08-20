@@ -1,12 +1,15 @@
 """MCP tool: search_jobs — fetches, inspects, validates, and extracts individual job postings.
 
-Includes Playwright fallback for JavaScript-rendered job pages.
+Includes fast async HTTP extraction, strict URL/job validation, structured timing logging,
+parallel verification, and Playwright fallback with finite timeouts.
 """
 
+import asyncio
 import hashlib
 import json
 import logging
 import re
+import time
 import uuid
 from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
@@ -110,10 +113,18 @@ EXCLUDED_TITLE_KEYWORDS = (
     "guide",
     "top 10",
     "top 20",
+    "top ai careers",
     "top careers",
     "best careers",
     "what is",
     "cheat sheet",
+    "jobs in ",
+    "+ jobs",
+    "job vacancies in",
+    "404",
+    "not found",
+    "page not found",
+    "error",
 )
 
 # Patterns that indicate search / category aggregator pages (not single jobs)
@@ -208,7 +219,7 @@ def is_candidate_url_structure(url: str) -> bool:
         r"boards\.greenhouse\.io/[^/]+/jobs/\d+",
         r"jobs\.lever\.co/[^/]+/[a-f0-9-]+",
         r"[\w-]+\.myworkdayjobs\.com/[^/]+/[\w-]+/job/",
-        r"jobs\.smartrecruiters\.com/[^/]+/\d+",
+        r"jobs\.smartrecruiters\.com/[^/]+/[a-zA-Z0-9-]+",
         r"jobs\.ashbyhq\.com/[^/]+/[a-f0-9-]+",
         r"apply\.workable\.com/[^/]+/j/[A-Z0-9]+",
         r"careers\.[^/]+/job/",
@@ -237,7 +248,6 @@ def is_candidate_url_structure(url: str) -> bool:
 def _clean_html_text(html_fragment: str) -> str:
     """Clean HTML tags and normalize whitespace."""
     soup = BeautifulSoup(html_fragment, "html.parser")
-    # Remove script and style elements
     for script in soup(["script", "style", "nav", "footer", "header"]):
         script.extract()
     text = soup.get_text(separator=" ")
@@ -257,8 +267,8 @@ def _extract_from_json_ld(soup: BeautifulSoup, url: str) -> dict | None:
                 if not isinstance(item, dict):
                     continue
                 item_type = item.get("@type", "")
-                if item_type == "JobPosting" or "JobPosting" in item_type:
-                    title = item.get("title", "").strip()
+                if item_type == "JobPosting" or "JobPosting" in str(item_type):
+                    title = str(item.get("title") or "").strip()
                     org = item.get("hiringOrganization", {})
                     company = org.get("name", "").strip() if isinstance(org, dict) else str(org).strip()
 
@@ -277,8 +287,8 @@ def _extract_from_json_ld(soup: BeautifulSoup, url: str) -> dict | None:
                         elif isinstance(addr, str):
                             loc_val = addr
 
-                    desc = _clean_html_text(item.get("description", ""))
-                    posted_at = item.get("datePosted", "")
+                    desc = _clean_html_text(str(item.get("description") or ""))
+                    posted_at = str(item.get("datePosted") or "")
                     job_id = str(item.get("identifier", {}).get("value") or "")
 
                     if title and company and desc:
@@ -309,7 +319,6 @@ def _extract_job_from_soup(soup: BeautifulSoup, url: str, raw_title: str, page_t
         company = json_ld_data["company"]
         title = json_ld_data["title"]
 
-        # Validate company is not fake/generic
         if not any(re.search(pat, company, re.IGNORECASE) for pat in GENERIC_COMPANY_PATTERNS):
             job_id = json_ld_data.get("job_id") or hashlib.sha256(url.encode()).hexdigest()[:16]
             return {
@@ -323,12 +332,27 @@ def _extract_job_from_soup(soup: BeautifulSoup, url: str, raw_title: str, page_t
                 "posted_at": json_ld_data.get("posted_at") or datetime.now(timezone.utc).strftime("%Y-%m-%d"),
             }
 
-    # 3. HTML Element Extraction fallback
+    # 3. HTML Element Extraction
     h1 = soup.find("h1")
-    title_text = h1.get_text().strip() if h1 else raw_title
+    title_text = ""
+    if h1 and h1.get_text().strip():
+        title_text = h1.get_text().strip()
+    if not title_text:
+        og_title = soup.find("meta", property="og:title")
+        if og_title and og_title.get("content", "").strip():
+            title_text = og_title.get("content", "").strip()
+    if not title_text:
+        title_el = soup.find("title")
+        if title_el and title_el.get_text().strip():
+            title_text = title_el.get_text().strip()
+    if not title_text:
+        title_text = raw_title
+
+    # Clean site suffix from title
+    title_text = re.sub(r"\s*\|\s*(SmartRecruiters|Greenhouse|Lever|Job Board|Workday).*$", "", title_text, flags=re.IGNORECASE).strip()
 
     # Exclude non-job title keywords
-    if any(k in title_text.lower() for k in EXCLUDED_TITLE_KEYWORDS):
+    if not title_text or any(k in title_text.lower() for k in EXCLUDED_TITLE_KEYWORDS):
         return None
 
     # Extract company from OpenGraph site_name or title
@@ -351,17 +375,17 @@ def _extract_job_from_soup(soup: BeautifulSoup, url: str, raw_title: str, page_t
 
     # Extract location
     location = "Not Specified"
-    loc_el = soup.find(class_=re.compile(r"location|job-location|workplace", re.IGNORECASE))
+    loc_el = soup.find(class_=re.compile(r"location|job-location|workplace|city", re.IGNORECASE))
     if loc_el:
         loc_text = loc_el.get_text().strip()
         if len(loc_text) < 60:
             location = loc_text
 
     # Extract description
-    desc_el = soup.find(class_=re.compile(r"job-description|description|content|posting-requirements", re.IGNORECASE))
+    desc_el = soup.find(class_=re.compile(r"job-description|description|content|posting-requirements|job-sections", re.IGNORECASE))
     desc_text = _clean_html_text(str(desc_el)) if desc_el else page_text[:2000]
 
-    if len(desc_text) < 80:
+    if len(desc_text) < 60:
         return None
 
     job_id = hashlib.sha256(url.encode()).hexdigest()[:16]
@@ -378,11 +402,12 @@ def _extract_job_from_soup(soup: BeautifulSoup, url: str, raw_title: str, page_t
 
 
 async def _playwright_render_page(url: str) -> str | None:
-    """Render a JavaScript-heavy page using Playwright and return the HTML content.
+    """Render a JavaScript-heavy page using Playwright with finite timeout.
     
-    Used as a fallback when HTTP fetch returns insufficient job data.
-    Reuses the existing Playwright dependency — does NOT create a second browser framework.
+    Used as fallback only when HTTP extraction is insufficient.
     """
+    start_time = time.monotonic()
+    logger.info("PLAYWRIGHT START: %s", url)
     try:
         from playwright.async_api import async_playwright
     except ImportError:
@@ -403,17 +428,22 @@ async def _playwright_render_page(url: str) -> str | None:
             page = await context.new_page()
 
             try:
-                await page.goto(url, timeout=15000, wait_until="networkidle")
-                await page.wait_for_timeout(2000)  # Extra time for JS rendering
+                # Use domcontentloaded with short 6s timeout (never wait indefinitely or for networkidle)
+                await page.goto(url, timeout=6000, wait_until="domcontentloaded")
+                await asyncio.sleep(0.5)
                 html_content = await page.content()
+                elapsed = time.monotonic() - start_time
+                logger.info("PLAYWRIGHT END: %s in %.2fs (length: %d)", url, elapsed, len(html_content))
                 return html_content
             except Exception as exc:
-                logger.debug("Playwright render failed for %s: %s", url, exc)
+                elapsed = time.monotonic() - start_time
+                logger.warning("PLAYWRIGHT END (FAILED/TIMEOUT): %s in %.2fs (%s)", url, elapsed, exc)
                 return None
             finally:
                 await browser.close()
     except Exception as exc:
-        logger.debug("Playwright launch failed: %s", exc)
+        elapsed = time.monotonic() - start_time
+        logger.warning("PLAYWRIGHT LAUNCH FAILED: %s in %.2fs (%s)", url, elapsed, exc)
         return None
 
 
@@ -422,14 +452,8 @@ async def fetch_and_inspect_job_page(
     raw_title: str,
     default_role: str,
 ) -> dict | None:
-    """Fetch the actual web page, inspect its content, and extract verified single-job data.
-    
-    Pipeline:
-        1. HTTP fetch → parse HTML/JSON-LD
-        2. If enough information → validate and accept
-        3. If NOT enough → Playwright fallback → render JS → re-extract
-        4. Validate individual job → accept/reject
-    """
+    """Fetch the actual web page, inspect its content, and extract verified single-job data."""
+    t0 = time.monotonic()
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -441,28 +465,31 @@ async def fetch_and_inspect_job_page(
 
     html_content = None
     try:
-        async with httpx.AsyncClient(timeout=12.0, follow_redirects=True, verify=False) as client:
+        async with httpx.AsyncClient(timeout=6.0, follow_redirects=True, verify=False) as client:
             resp = await client.get(url, headers=headers)
-            if resp.status_code >= 400:
-                logger.debug("Page fetch returned status %d for %s", resp.status_code, url)
-                # Don't return None yet — try Playwright fallback for non-404 errors
-                if resp.status_code == 404:
-                    return None
-            else:
+            if resp.status_code < 400:
                 html_content = resp.text
+            elif resp.status_code == 404:
+                return None
     except Exception as exc:
-        logger.debug("HTTP fetch failed for %s: %s — will try Playwright fallback", url, exc)
+        logger.debug("HTTP fetch failed for %s: %s", url, exc)
 
-    # Try extracting from HTTP response first
+    # 1. Try extracting from fast HTTP response
     if html_content:
         soup = BeautifulSoup(html_content, "html.parser")
         page_text = _clean_html_text(html_content).lower()
         result = _extract_job_from_soup(soup, url, raw_title, page_text)
         if result:
+            elapsed = time.monotonic() - t0
+            logger.info("URL VALIDATION [HTTP SUCCESS]: %s -> '%s' at '%s' (%.2fs)", url, result['title'], result['company'], elapsed)
             return result
-        logger.debug("HTTP extraction insufficient for %s — trying Playwright fallback", url)
+        # If full HTML was retrieved (>1500 chars) but rejected as non-job/aggregator, don't waste time on Playwright
+        if len(html_content) > 1500:
+            elapsed = time.monotonic() - t0
+            logger.debug("URL VALIDATION [REJECTED]: %s in %.2fs", url, elapsed)
+            return None
 
-    # === PLAYWRIGHT FALLBACK for JavaScript-rendered pages ===
+    # 2. Try Playwright fallback only for empty/minimal JS shells or failed HTTP
     rendered_html = await _playwright_render_page(url)
     if rendered_html:
         soup = BeautifulSoup(rendered_html, "html.parser")
@@ -470,10 +497,12 @@ async def fetch_and_inspect_job_page(
         result = _extract_job_from_soup(soup, url, raw_title, page_text)
         if result:
             result["source"] = "tavily_playwright_verified"
-            logger.info("✅ Playwright fallback extracted job from %s", url)
+            elapsed = time.monotonic() - t0
+            logger.info("URL VALIDATION [PLAYWRIGHT SUCCESS]: %s -> '%s' at '%s' (%.2fs)", url, result['title'], result['company'], elapsed)
             return result
-        logger.debug("Playwright fallback also failed to extract job from %s", url)
 
+    elapsed = time.monotonic() - t0
+    logger.debug("URL VALIDATION [REJECTED]: %s in %.2fs", url, elapsed)
     return None
 
 
@@ -484,66 +513,83 @@ async def _search_tavily(
     experience_years: int,
     max_results: int,
 ) -> list[dict]:
-    """Search Tavily for candidate URLs, fetch/inspect the actual web pages, and return verified jobs."""
-    if not settings.tavily_api_key:
+    """Search Tavily for candidate URLs, fetch/inspect in parallel, and return verified jobs."""
+    has_key = bool(settings.tavily_api_key)
+    logger.info("TAVILY_API_KEY configured: %s", has_key)
+    if not has_key:
         return []
 
     try:
         from langchain_community.tools.tavily_search import TavilySearchResults
 
-        loc_str = " OR ".join(locations) if locations else ""
-        skills_str = " ".join(skills[:2]) if skills else ""
+        loc_str = " OR ".join(locations[:2]) if locations else ""
+        query = f'"{role}" ({loc_str}) ("boards.greenhouse.io" OR "jobs.lever.co" OR "jobs.smartrecruiters.com" OR "jobs.ashbyhq.com")'
 
-        queries = [
-            f'"{role}" ({loc_str}) ("boards.greenhouse.io" OR "jobs.lever.co" OR "myworkdayjobs.com" OR "jobs.smartrecruiters.com" OR "jobs.ashbyhq.com")',
-            f'"{role}" {skills_str} ("apply" OR "job description" OR "responsibilities") {loc_str}',
-        ]
+        tavily_start = time.monotonic()
+        logger.info("TAVILY START: query='%s'", query)
+
+        # Target 5–10 results for deterministic, high-speed execution
+        target_limit = min(max(max_results, 6), 10)
+        tool = TavilySearchResults(
+            max_results=target_limit,
+            tavily_api_key=settings.tavily_api_key,
+        )
+
+        loop = asyncio.get_running_loop()
+        results = await loop.run_in_executor(None, lambda: tool.invoke({"query": query}))
+        tavily_elapsed = time.monotonic() - tavily_start
+        logger.info("TAVILY END: %.2fs (raw results count: %d)", tavily_elapsed, len(results) if isinstance(results, list) else 0)
 
         candidate_urls: list[tuple[str, str]] = []
         seen_candidate_urls: set[str] = set()
 
-        tool = TavilySearchResults(
-            max_results=max(10, max_results + 5),
-            tavily_api_key=settings.tavily_api_key,
-        )
+        if isinstance(results, list):
+            for r in results:
+                u = r.get("url", "").strip()
+                t = r.get("title", "").strip()
+                if u and u not in seen_candidate_urls:
+                    canon = canonicalize_url(u)
+                    if canon and is_candidate_url_structure(canon):
+                        candidate_urls.append((canon, t))
+                        seen_candidate_urls.add(canon)
 
-        for query in queries:
-            try:
-                results = tool.invoke({"query": query})
-                if isinstance(results, list):
-                    for r in results:
-                        u = r.get("url", "").strip()
-                        t = r.get("title", "").strip()
-                        if u and u not in seen_candidate_urls:
-                            canon = canonicalize_url(u)
-                            if canon and is_candidate_url_structure(canon):
-                                candidate_urls.append((canon, t))
-                                seen_candidate_urls.add(canon)
-            except Exception as e:
-                logger.warning("Tavily query '%s' failed: %s", query, e)
+        logger.info("URL VALIDATION START: %d candidate URLs to validate", len(candidate_urls))
+        val_start = time.monotonic()
 
-        # Inspect candidate pages
+        # Concurrent parallel validation with Semaphore
+        sem = asyncio.Semaphore(3)
+
+        async def validate_with_sem(url: str, raw_title: str) -> dict | None:
+            async with sem:
+                try:
+                    return await asyncio.wait_for(
+                        fetch_and_inspect_job_page(url, raw_title, role),
+                        timeout=8.0,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("URL validation timed out (8.0s) for %s", url)
+                    return None
+                except Exception as e:
+                    logger.debug("URL validation exception for %s: %s", url, e)
+                    return None
+
+        tasks = [validate_with_sem(u, t) for u, t in candidate_urls[:10]]
+        validated_raw = await asyncio.gather(*tasks, return_exceptions=True)
+
         verified_jobs: list[dict] = []
         seen_signatures: set[tuple[str, str]] = set()
 
-        for url, raw_title in candidate_urls:
-            if len(verified_jobs) >= max_results:
-                break
+        for res in validated_raw:
+            if isinstance(res, dict) and res:
+                norm_comp = re.sub(r"[^\w]", "", res["company"].lower())
+                norm_title = re.sub(r"[^\w]", "", res["title"].lower())
+                sig = (norm_comp, norm_title)
+                if sig not in seen_signatures:
+                    seen_signatures.add(sig)
+                    verified_jobs.append(res)
 
-            job_data = await fetch_and_inspect_job_page(url, raw_title, role)
-            if not job_data:
-                continue
-
-            # Strict deduplication by (normalized company, normalized title)
-            norm_comp = re.sub(r"[^\w]", "", job_data["company"].lower())
-            norm_title = re.sub(r"[^\w]", "", job_data["title"].lower())
-            sig = (norm_comp, norm_title)
-
-            if sig in seen_signatures:
-                continue
-            seen_signatures.add(sig)
-
-            verified_jobs.append(job_data)
+        val_elapsed = time.monotonic() - val_start
+        logger.info("URL VALIDATION END: %.2fs (extracted %d verified jobs from %d candidates)", val_elapsed, len(verified_jobs), len(candidate_urls))
 
         return verified_jobs
     except Exception as exc:
@@ -560,6 +606,9 @@ async def search_jobs_tool(
     test_mode: bool | None = None,
 ) -> str:
     """MCP tool implementation to search, inspect actual pages, validate, and return real individual job listings."""
+    start_time = time.monotonic()
+    logger.info("SEARCH_JOBS START: role='%s', locations=%s, max_results=%d", role, locations, max_results)
+
     locations = locations or []
     skills = skills or []
 
@@ -576,6 +625,8 @@ async def search_jobs_tool(
             )
             if loc_match:
                 mock_subset.append(mock)
+        elapsed = time.monotonic() - start_time
+        logger.info("SEARCH_JOBS END: %.2fs (status=TEST_MOCK_DATA, jobs=%d)", elapsed, len(mock_subset[:max_results]))
         return json.dumps({
             "jobs": mock_subset[:max_results],
             "total_found": len(mock_subset[:max_results]),
@@ -585,6 +636,8 @@ async def search_jobs_tool(
     # Live Production Job Discovery
     if not settings.tavily_api_key:
         logger.warning("Tavily API key is not configured — live job search is unavailable.")
+        elapsed = time.monotonic() - start_time
+        logger.info("SEARCH_JOBS END: %.2fs (status=LIVE_JOB_SEARCH_UNAVAILABLE)", elapsed)
         return json.dumps({
             "jobs": [],
             "total_found": 0,
@@ -600,8 +653,12 @@ async def search_jobs_tool(
         max_results=max_results,
     )
 
+    elapsed = time.monotonic() - start_time
+    status = "SUCCESS" if jobs else "NO_MATCHING_JOBS_FOUND"
+    logger.info("SEARCH_JOBS END: %.2fs (status=%s, jobs=%d)", elapsed, status, len(jobs))
+
     return json.dumps({
         "jobs": jobs,
         "total_found": len(jobs),
-        "status": "SUCCESS" if jobs else "NO_MATCHING_JOBS_FOUND",
+        "status": status,
     })

@@ -208,9 +208,12 @@ class MCPClient:
             elapsed = time.monotonic() - start_time
             logger.error("MCP tool '%s' timed out after %.2fs", name, elapsed)
             return {
-                "status": "FAILED",
+                "status": "SEARCH_TIMEOUT" if name == "search_jobs" else "TIMEOUT",
+                "message": f"MCP tool '{name}' timed out after {settings.mcp_tool_timeout}s",
                 "error": f"MCP tool '{name}' timed out after {settings.mcp_tool_timeout}s",
                 "tool": name,
+                "jobs": [],
+                "partial_jobs": [],
             }
         except Exception as exc:
             elapsed = time.monotonic() - start_time

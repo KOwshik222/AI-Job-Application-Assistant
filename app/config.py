@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     mcp_server_command: str = "python"
     mcp_server_args: str = "-m,mcp_server.server"
     mcp_connection_timeout: int = 30
-    mcp_tool_timeout: int = 60
+    mcp_tool_timeout: int = 120
 
     embedding_model: str = "text-embedding-3-small"
     chat_model: str = "gpt-4o-mini"

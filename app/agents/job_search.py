@@ -27,13 +27,19 @@ async def job_search_agent(state: AgentState) -> dict:
         },
     )
 
-    jobs = [JobListing(**j).model_dump() for j in result.get("jobs", [])]
+    raw_jobs = result.get("jobs") or result.get("partial_jobs") or []
+    jobs = [JobListing(**j).model_dump() for j in raw_jobs]
     status = result.get("status", "")
-    
+    message = result.get("message") or result.get("error") or ""
+
     errors: list[str] = []
     if not jobs:
         if status == "LIVE_JOB_SEARCH_UNAVAILABLE":
             errors.append("Live job search is unavailable: Tavily API key is not configured in .env.")
+        elif status == "SEARCH_TIMEOUT":
+            errors.append(f"Job search timed out: {message or 'operation exceeded configured timeout'}.")
+        elif status in ("FAILED", "TAVILY_SEARCH_FAILED"):
+            errors.append(f"Job search failed: {message or status}.")
         else:
             errors.append(f"No matching individual job postings found for '{profile.role}'.")
 
@@ -42,3 +48,4 @@ async def job_search_agent(state: AgentState) -> dict:
         "next_agent": "resume_match" if jobs else "notification",
         "errors": errors,
     }
+
