@@ -70,7 +70,7 @@ async def test_search_results_flow_to_resume_match():
 
 @pytest.mark.asyncio
 async def test_below_threshold_jobs_are_persisted_not_discarded():
-    """Jobs with score < threshold are saved to DB and recorded in pending_manual_jobs."""
+    """Jobs with score < threshold are saved to DB with status NOT_MATCHED (not confused with manual action)."""
     import uuid
     uid_str = str(uuid.uuid4())
     async with async_session_factory() as session:
@@ -122,16 +122,14 @@ async def test_below_threshold_jobs_are_persisted_not_discarded():
             result = await resume_match_agent(state, session)
 
             assert len(result["matched_jobs"]) == 0
-            assert len(result["pending_manual_jobs"]) == 1
-            assert result["pending_manual_jobs"][0]["company"] == "Acme Corp"
-            assert "60%" in result["pending_manual_jobs"][0]["reason"]
+            assert result["next_agent"] == "notification"
 
-            # Verify persisted in database
+            # Verify persisted in database as NOT_MATCHED (not confused with manual action)
             rows, total = await repo.list_applications(user.user_id)
             assert total == 1
             app, job = rows[0]
             assert job.company == "Acme Corp"
-            assert app.status == "PENDING_MANUAL"
+            assert app.status == "NOT_MATCHED"
             assert app.match_score == 60
 
 

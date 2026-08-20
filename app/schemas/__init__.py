@@ -46,7 +46,7 @@ class MatchedJob(JobListing):
     match_rationale: str = ""
 
 
-ApplicationStatus = Literal["SUCCESS", "FAILED", "PENDING_MANUAL"]
+ApplicationStatus = Literal["SUCCESS", "FAILED", "PENDING_MANUAL", "ELIGIBLE", "NOT_MATCHED", "QUEUED"]
 ManualStatus = Literal["PENDING_MANUAL_ACTION"]
 
 

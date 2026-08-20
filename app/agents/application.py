@@ -39,17 +39,31 @@ async def application_agent(state: AgentState, session: AsyncSession) -> dict:
 
     seen_urls: set[str] = set()
 
-    for job_data in state.get("matched_jobs", []):
-        if attempted >= max_apps:
-            logger.info("Reached maximum applications for this run (%d)", max_apps)
-            break
-
+    for idx, job_data in enumerate(state.get("matched_jobs", [])):
         job = MatchedJob(**job_data)
 
         # Skip duplicate URLs in same batch
         if job.application_url in seen_urls:
             continue
         seen_urls.add(job.application_url)
+
+        # Check application limit guardrail
+        if attempted >= max_apps:
+            logger.info("Reached maximum applications for this run (%d). Queuing remaining eligible jobs.", max_apps)
+            logger.info("QUEUED FOR FUTURE RUN: %s / %s (score=%d)", job.company, job.title, job.match_score)
+            # Ensure job is persisted in DB as ELIGIBLE/QUEUED so it does not disappear
+            db_job = await repo.upsert_job(job)
+            await repo.create_application(
+                user_id=state["user_id"],
+                job_id=db_job.job_id,
+                resume_id=state["resume_id"],
+                status="ELIGIBLE",
+                match_score=job.match_score,
+                run_id=state["run_id"],
+            )
+            continue
+
+        logger.info("APPLICATION AGENT START: %s / %s", job.company, job.title)
 
         # CRITICAL: Verify original resume integrity BEFORE EVERY application
         if expected_hash:
@@ -69,7 +83,6 @@ async def application_agent(state: AgentState, session: AsyncSession) -> dict:
                         error=f"Original resume integrity check failed: {integrity['reason']}",
                     ).model_dump()
                 )
-                # Stop ALL applications — resume is compromised
                 return {
                     "applied_jobs": applied,
                     "pending_manual_jobs": pending,
@@ -79,6 +92,7 @@ async def application_agent(state: AgentState, session: AsyncSession) -> dict:
                     "application_complete": True,
                     "next_agent": "notification",
                 }
+            logger.info("RESUME HASH VERIFIED: %s", expected_hash[:16])
 
         # Upsert job in DB
         db_job = await repo.upsert_job(job)
@@ -87,6 +101,7 @@ async def application_agent(state: AgentState, session: AsyncSession) -> dict:
         # Check guardrails
         can_apply, reason = await guardrails.can_apply(state["user_id"], job)
         if not can_apply:
+            logger.info("Guardrail blocked application to %s: %s", job.company, reason)
             manual = ManualActionItem(
                 company=job.company,
                 job_url=job.application_url,
@@ -105,6 +120,11 @@ async def application_agent(state: AgentState, session: AsyncSession) -> dict:
             continue
 
         # Invoke MCP apply_job tool
+        logger.info("MCP APPLY_JOB START: %s / %s", job.company, job.title)
+        logger.info("BROWSER APPLICATION START: %s", job.application_url)
+        logger.info("FORM FILL START: %s", job.company)
+        logger.info("SUBMISSION ATTEMPT: %s", job.company)
+
         try:
             result = await mcp.call_tool(
                 "apply_job",
@@ -133,6 +153,8 @@ async def application_agent(state: AgentState, session: AsyncSession) -> dict:
 
         attempted += 1
         status = result.get("status", "FAILED")
+        logger.info("SUBMISSION VERIFICATION: %s -> %s", job.company, status)
+        logger.info("FINAL STATUS: %s for %s (%s)", status, job.company, job.title)
 
         # Check for MCP unavailable
         if status == "MCP_UNAVAILABLE":

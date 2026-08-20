@@ -127,6 +127,207 @@ EXCLUDED_TITLE_KEYWORDS = (
     "error",
 )
 
+# Senior/Lead keywords to reject when candidate experience <= 2 years
+SENIOR_TITLE_KEYWORDS = (
+    "senior",
+    "sr.",
+    "sr ",
+    "lead",
+    "staff",
+    "principal",
+    "director",
+    "manager",
+    "vp",
+    "head of",
+    "architect",
+    "chief",
+    "team lead",
+    "tech lead",
+)
+
+# Semantic role equivalents
+ROLE_SYNONYMS = {
+    "ai developer": [
+        "AI Developer",
+        "AI Engineer",
+        "Junior AI Engineer",
+        "Machine Learning Engineer",
+        "ML Engineer",
+        "Generative AI Developer",
+        "Generative AI Engineer",
+        "GenAI Engineer",
+        "LLM Engineer",
+        "AI/ML Engineer",
+        "Junior ML Engineer",
+        "Python AI Developer",
+        "Applied AI Engineer",
+    ],
+    "ai engineer": [
+        "AI Engineer",
+        "AI Developer",
+        "Junior AI Engineer",
+        "Machine Learning Engineer",
+        "ML Engineer",
+        "Generative AI Engineer",
+        "GenAI Engineer",
+        "LLM Engineer",
+        "Applied AI Engineer",
+    ],
+    "machine learning engineer": [
+        "Machine Learning Engineer",
+        "ML Engineer",
+        "AI Engineer",
+        "AI Developer",
+        "Junior ML Engineer",
+        "Applied Machine Learning Engineer",
+        "Python Machine Learning Engineer",
+    ],
+    "generative ai developer": [
+        "Generative AI Developer",
+        "Generative AI Engineer",
+        "GenAI Engineer",
+        "LLM Engineer",
+        "AI Engineer",
+        "AI Developer",
+    ],
+    "python developer": [
+        "Python Developer",
+        "Python Backend Developer",
+        "Python Software Engineer",
+        "Python AI Developer",
+        "Junior Python Developer",
+    ],
+    "java developer": [
+        "Java Developer",
+        "Core Java Developer",
+        "Java Backend Developer",
+        "Java Software Engineer",
+        "Junior Java Developer",
+    ],
+}
+
+
+def get_role_synonyms(role: str) -> list[str]:
+    """Retrieve semantic equivalents for a given job role."""
+    r_clean = role.lower().strip()
+    if r_clean in ROLE_SYNONYMS:
+        return ROLE_SYNONYMS[r_clean]
+    for k, syns in ROLE_SYNONYMS.items():
+        if k in r_clean or r_clean in k:
+            return syns
+    return [role]
+
+
+def is_role_compatible(job_title: str, target_role: str) -> bool:
+    """Semantic role compatibility check."""
+    if not target_role:
+        return True
+    t_low = target_role.lower().strip()
+    j_low = job_title.lower().strip()
+
+    # Reject obvious non-tech / completely unrelated titles
+    unrelated = [
+        "sales", "marketing", "accountant", "accounting", "recruiter", "talent acquisition",
+        "human resources", "hr manager", "nurse", "physician", "pharmacist", "attorney",
+        "legal counsel", "driver", "cashier", "clerk", "receptionist", "customer service representative",
+    ]
+    if any(re.search(r"\b" + re.escape(u) + r"\b", j_low) for u in unrelated):
+        return False
+
+    # AI / ML target role matching
+    ai_synonyms = [
+        "ai", "artificial intelligence", "machine learning", "ml", "generative ai",
+        "genai", "deep learning", "nlp", "computer vision", "llm", "data scientist",
+        "data science", "applied ai", "python developer", "python engineer", "software engineer",
+    ]
+    if any(s in t_low for s in ["ai", "machine learning", "ml", "genai", "generative", "deep learning", "nlp", "vision", "llm"]):
+        if any(re.search(r"\b" + re.escape(s) + r"\b", j_low) for s in ai_synonyms) or "developer" in j_low or "engineer" in j_low:
+            return True
+        return False
+
+    # General tech role matching
+    target_words = [w for w in re.split(r"\W+", t_low) if len(w) > 2]
+    if any(w in j_low for w in target_words):
+        return True
+    return True
+
+
+def is_experience_compatible(title: str, description: str, candidate_experience: int | None) -> tuple[bool, str]:
+    """Check experience compatibility.
+    
+    If candidate has <= 2 years experience (e.g. 1 year):
+    - Reject senior/lead titles.
+    - Reject jobs explicitly requiring 3+, 4+, 5+ years.
+    - Accept 0-1, 0-2, 1-2, 1+, Junior, Entry-level, or unspecified experience.
+    """
+    if candidate_experience is None:
+        return True, "No candidate experience constraint"
+
+    t_low = title.lower()
+    d_low = description.lower()
+
+    if candidate_experience <= 2:
+        # Check Senior Titles
+        for kw in SENIOR_TITLE_KEYWORDS:
+            if re.search(r"\b" + re.escape(kw) + r"\b", t_low):
+                return False, f"Senior role ('{kw}') incompatible with {candidate_experience} year(s) experience"
+
+        # Check Explicit Experience Requirements in Description
+        exp_req_matches = re.findall(
+            r"(?:minimum|at least|require[s]?|with|have)\s+([3-9]|1[0-5])\+?\s*(?:-\s*\d+)?\s*years?|"
+            r"\b([3-9]|1[0-5])\+?\s*years?\s*(?:of\s+)?(?:experience|exp|relevant)",
+            d_low,
+        )
+        for m in exp_req_matches:
+            val = m[0] or m[1]
+            if val and int(val) >= 3:
+                return False, f"Explicitly mandates {val}+ years experience (candidate has {candidate_experience} years)"
+
+    return True, "Experience level compatible"
+
+
+def build_targeted_search_queries(
+    role: str,
+    skills: list[str],
+    locations: list[str],
+    experience_years: int,
+) -> list[str]:
+    """Build targeted, high-precision search queries from user preferences."""
+    ats_filter = '("boards.greenhouse.io" OR "jobs.lever.co" OR "jobs.smartrecruiters.com" OR "jobs.ashbyhq.com" OR "apply.workable.com" OR "myworkdayjobs.com")'
+    loc_str = " OR ".join(locations[:3]) if locations else ""
+    loc_clause = f"({loc_str})" if loc_str else ""
+
+    role_syns = get_role_synonyms(role)
+    role_syns_str = " OR ".join(f'"{r}"' for r in role_syns[:4])
+
+    skill_terms = [f'"{s}"' if " " in s else s for s in skills[:3] if s]
+    skill_clause = f"({' OR '.join(skill_terms)})" if skill_terms else ""
+
+    queries = []
+
+    # Query 1: Targeted Role Synonyms + Location + ATS domains + Top Skills
+    q1_parts = [f"({role_syns_str})"]
+    if loc_clause:
+        q1_parts.append(loc_clause)
+    if skill_clause:
+        q1_parts.append(skill_clause)
+    q1_parts.append(ats_filter)
+    queries.append(" ".join(q1_parts))
+
+    # Query 2: Experience-targeted query for entry/junior level
+    if experience_years <= 2:
+        exp_terms = '("Junior AI" OR "Junior Machine Learning" OR "AI Engineer" OR "Generative AI Developer" OR "Python AI Developer")'
+        q2_parts = [exp_terms]
+        if loc_clause:
+            q2_parts.append(loc_clause)
+        if skill_clause:
+            q2_parts.append(skill_clause)
+        q2_parts.append(ats_filter)
+        queries.append(" ".join(q2_parts))
+
+    return queries
+
+
 # Patterns that indicate search / category aggregator pages (not single jobs)
 AGGREGATOR_URL_PATTERNS = (
     r"/jobs/search",
@@ -305,8 +506,15 @@ def _extract_from_json_ld(soup: BeautifulSoup, url: str) -> dict | None:
     return None
 
 
-def _extract_job_from_soup(soup: BeautifulSoup, url: str, raw_title: str, page_text: str) -> dict | None:
-    """Extract job data from parsed HTML soup. Used by both HTTP and Playwright paths."""
+def _extract_job_from_soup(
+    soup: BeautifulSoup,
+    url: str,
+    raw_title: str,
+    page_text: str,
+    target_role: str = "",
+    candidate_experience: int | None = None,
+) -> dict | None:
+    """Extract job data from parsed HTML soup with role & experience validation."""
     # 1. Multi-job aggregator detection in page content
     for pattern in AGGREGATOR_CONTENT_SIGNALS:
         if re.search(pattern, page_text):
@@ -318,19 +526,27 @@ def _extract_job_from_soup(soup: BeautifulSoup, url: str, raw_title: str, page_t
     if json_ld_data and len(json_ld_data["description"]) > 50:
         company = json_ld_data["company"]
         title = json_ld_data["title"]
+        desc = json_ld_data["description"]
 
         if not any(re.search(pat, company, re.IGNORECASE) for pat in GENERIC_COMPANY_PATTERNS):
-            job_id = json_ld_data.get("job_id") or hashlib.sha256(url.encode()).hexdigest()[:16]
-            return {
-                "job_id": job_id,
-                "title": title,
-                "company": company,
-                "location": json_ld_data["location"],
-                "description": json_ld_data["description"][:3000],
-                "application_url": url,
-                "source": "tavily_verified",
-                "posted_at": json_ld_data.get("posted_at") or datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-            }
+            if is_role_compatible(title, target_role):
+                exp_ok, exp_reason = is_experience_compatible(title, desc, candidate_experience)
+                if exp_ok:
+                    job_id = json_ld_data.get("job_id") or hashlib.sha256(url.encode()).hexdigest()[:16]
+                    return {
+                        "job_id": job_id,
+                        "title": title,
+                        "company": company,
+                        "location": json_ld_data["location"],
+                        "description": desc[:3000],
+                        "application_url": url,
+                        "source": "tavily_verified",
+                        "posted_at": json_ld_data.get("posted_at") or datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                    }
+                else:
+                    logger.debug("JSON-LD job '%s' rejected by experience: %s", title, exp_reason)
+            else:
+                logger.debug("JSON-LD job '%s' rejected: incompatible with target role '%s'", title, target_role)
 
     # 3. HTML Element Extraction
     h1 = soup.find("h1")
@@ -353,6 +569,11 @@ def _extract_job_from_soup(soup: BeautifulSoup, url: str, raw_title: str, page_t
 
     # Exclude non-job title keywords
     if not title_text or any(k in title_text.lower() for k in EXCLUDED_TITLE_KEYWORDS):
+        return None
+
+    # Role compatibility check
+    if not is_role_compatible(title_text, target_role):
+        logger.debug("Job title '%s' rejected: incompatible with role '%s'", title_text, target_role)
         return None
 
     # Extract company from OpenGraph site_name or title
@@ -386,6 +607,12 @@ def _extract_job_from_soup(soup: BeautifulSoup, url: str, raw_title: str, page_t
     desc_text = _clean_html_text(str(desc_el)) if desc_el else page_text[:2000]
 
     if len(desc_text) < 60:
+        return None
+
+    # Experience compatibility check
+    exp_ok, exp_reason = is_experience_compatible(title_text, desc_text, candidate_experience)
+    if not exp_ok:
+        logger.debug("Job '%s' rejected by experience: %s", title_text, exp_reason)
         return None
 
     job_id = hashlib.sha256(url.encode()).hexdigest()[:16]
@@ -428,7 +655,6 @@ async def _playwright_render_page(url: str) -> str | None:
             page = await context.new_page()
 
             try:
-                # Use domcontentloaded with short 6s timeout (never wait indefinitely or for networkidle)
                 await page.goto(url, timeout=6000, wait_until="domcontentloaded")
                 await asyncio.sleep(0.5)
                 html_content = await page.content()
@@ -450,7 +676,8 @@ async def _playwright_render_page(url: str) -> str | None:
 async def fetch_and_inspect_job_page(
     url: str,
     raw_title: str,
-    default_role: str,
+    default_role: str = "",
+    candidate_experience: int | None = None,
 ) -> dict | None:
     """Fetch the actual web page, inspect its content, and extract verified single-job data."""
     t0 = time.monotonic()
@@ -478,12 +705,15 @@ async def fetch_and_inspect_job_page(
     if html_content:
         soup = BeautifulSoup(html_content, "html.parser")
         page_text = _clean_html_text(html_content).lower()
-        result = _extract_job_from_soup(soup, url, raw_title, page_text)
+        result = _extract_job_from_soup(
+            soup, url, raw_title, page_text,
+            target_role=default_role,
+            candidate_experience=candidate_experience,
+        )
         if result:
             elapsed = time.monotonic() - t0
             logger.info("URL VALIDATION [HTTP SUCCESS]: %s -> '%s' at '%s' (%.2fs)", url, result['title'], result['company'], elapsed)
             return result
-        # If full HTML was retrieved (>1500 chars) but rejected as non-job/aggregator, don't waste time on Playwright
         if len(html_content) > 1500:
             elapsed = time.monotonic() - t0
             logger.debug("URL VALIDATION [REJECTED]: %s in %.2fs", url, elapsed)
@@ -494,7 +724,11 @@ async def fetch_and_inspect_job_page(
     if rendered_html:
         soup = BeautifulSoup(rendered_html, "html.parser")
         page_text = _clean_html_text(rendered_html).lower()
-        result = _extract_job_from_soup(soup, url, raw_title, page_text)
+        result = _extract_job_from_soup(
+            soup, url, raw_title, page_text,
+            target_role=default_role,
+            candidate_experience=candidate_experience,
+        )
         if result:
             result["source"] = "tavily_playwright_verified"
             elapsed = time.monotonic() - t0
@@ -513,7 +747,7 @@ async def _search_tavily(
     experience_years: int,
     max_results: int,
 ) -> list[dict]:
-    """Search Tavily for candidate URLs, fetch/inspect in parallel, and return verified jobs."""
+    """Search Tavily with targeted queries, fetch/inspect in parallel, and return verified jobs."""
     has_key = bool(settings.tavily_api_key)
     logger.info("TAVILY_API_KEY configured: %s", has_key)
     if not has_key:
@@ -522,50 +756,66 @@ async def _search_tavily(
     try:
         from langchain_community.tools.tavily_search import TavilySearchResults
 
-        loc_str = " OR ".join(locations[:2]) if locations else ""
-        query = f'"{role}" ({loc_str}) ("boards.greenhouse.io" OR "jobs.lever.co" OR "jobs.smartrecruiters.com" OR "jobs.ashbyhq.com")'
-
-        tavily_start = time.monotonic()
-        logger.info("TAVILY START: query='%s'", query)
-
-        # Target 5–10 results for deterministic, high-speed execution
-        target_limit = min(max(max_results, 6), 10)
-        tool = TavilySearchResults(
-            max_results=target_limit,
-            tavily_api_key=settings.tavily_api_key,
+        queries = build_targeted_search_queries(
+            role=role,
+            skills=skills,
+            locations=locations,
+            experience_years=experience_years,
         )
-
-        loop = asyncio.get_running_loop()
-        results = await loop.run_in_executor(None, lambda: tool.invoke({"query": query}))
-        tavily_elapsed = time.monotonic() - tavily_start
-        logger.info("TAVILY END: %.2fs (raw results count: %d)", tavily_elapsed, len(results) if isinstance(results, list) else 0)
 
         candidate_urls: list[tuple[str, str]] = []
         seen_candidate_urls: set[str] = set()
 
-        if isinstance(results, list):
-            for r in results:
-                u = r.get("url", "").strip()
-                t = r.get("title", "").strip()
-                if u and u not in seen_candidate_urls:
-                    canon = canonicalize_url(u)
-                    if canon and is_candidate_url_structure(canon):
-                        candidate_urls.append((canon, t))
-                        seen_candidate_urls.add(canon)
+        tavily_start = time.monotonic()
+        tool = TavilySearchResults(
+            max_results=min(max(max_results, 6), 10),
+            tavily_api_key=settings.tavily_api_key,
+        )
+
+        loop = asyncio.get_running_loop()
+
+        for q in queries[:2]:
+            logger.info("TAVILY START: query='%s'", q)
+            try:
+                results = await loop.run_in_executor(None, lambda query=q: tool.invoke({"query": query}))
+                if isinstance(results, list):
+                    for r in results:
+                        u = r.get("url", "").strip()
+                        t = r.get("title", "").strip()
+                        if u and u not in seen_candidate_urls:
+                            canon = canonicalize_url(u)
+                            if canon and is_candidate_url_structure(canon):
+                                candidate_urls.append((canon, t))
+                                seen_candidate_urls.add(canon)
+            except Exception as q_err:
+                logger.warning("Tavily query failed: '%s': %s", q, q_err)
+
+        tavily_elapsed = time.monotonic() - tavily_start
+        logger.info("TAVILY END: %.2fs (candidate URLs collected: %d)", tavily_elapsed, len(candidate_urls))
 
         logger.info("URL VALIDATION START: %d candidate URLs to validate", len(candidate_urls))
         val_start = time.monotonic()
 
-        # Concurrent parallel validation with Semaphore
         sem = asyncio.Semaphore(3)
 
         async def validate_with_sem(url: str, raw_title: str) -> dict | None:
             async with sem:
                 try:
-                    return await asyncio.wait_for(
-                        fetch_and_inspect_job_page(url, raw_title, role),
-                        timeout=8.0,
-                    )
+                    try:
+                        return await asyncio.wait_for(
+                            fetch_and_inspect_job_page(
+                                url=url,
+                                raw_title=raw_title,
+                                default_role=role,
+                                candidate_experience=experience_years,
+                            ),
+                            timeout=8.0,
+                        )
+                    except TypeError:
+                        return await asyncio.wait_for(
+                            fetch_and_inspect_job_page(url, raw_title, role),
+                            timeout=8.0,
+                        )
                 except asyncio.TimeoutError:
                     logger.warning("URL validation timed out (8.0s) for %s", url)
                     return None
@@ -573,12 +823,13 @@ async def _search_tavily(
                     logger.debug("URL validation exception for %s: %s", url, e)
                     return None
 
-        tasks = [validate_with_sem(u, t) for u, t in candidate_urls[:10]]
+        tasks = [validate_with_sem(u, t) for u, t in candidate_urls[:12]]
         validated_raw = await asyncio.gather(*tasks, return_exceptions=True)
 
         verified_jobs: list[dict] = []
         seen_signatures: set[tuple[str, str]] = set()
 
+        rejected_by_duplicate = 0
         for res in validated_raw:
             if isinstance(res, dict) and res:
                 norm_comp = re.sub(r"[^\w]", "", res["company"].lower())
@@ -587,9 +838,17 @@ async def _search_tavily(
                 if sig not in seen_signatures:
                     seen_signatures.add(sig)
                     verified_jobs.append(res)
+                else:
+                    rejected_by_duplicate += 1
 
         val_elapsed = time.monotonic() - val_start
-        logger.info("URL VALIDATION END: %.2fs (extracted %d verified jobs from %d candidates)", val_elapsed, len(verified_jobs), len(candidate_urls))
+        logger.info(
+            "URL VALIDATION END: %.2fs (extracted %d verified relevant jobs from %d candidates, duplicates: %d)",
+            val_elapsed,
+            len(verified_jobs),
+            len(candidate_urls),
+            rejected_by_duplicate,
+        )
 
         return verified_jobs
     except Exception as exc:
@@ -607,7 +866,7 @@ async def search_jobs_tool(
 ) -> str:
     """MCP tool implementation to search, inspect actual pages, validate, and return real individual job listings."""
     start_time = time.monotonic()
-    logger.info("SEARCH_JOBS START: role='%s', locations=%s, max_results=%d", role, locations, max_results)
+    logger.info("SEARCH_JOBS START: role='%s', experience=%d, locations=%s, max_results=%d", role, experience_years, locations, max_results)
 
     locations = locations or []
     skills = skills or []
@@ -662,3 +921,4 @@ async def search_jobs_tool(
         "total_found": len(jobs),
         "status": status,
     })
+

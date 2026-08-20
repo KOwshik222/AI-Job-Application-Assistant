@@ -47,11 +47,19 @@ function parseList(val) {
 function statusBadge(status) {
   const map = {
     SUCCESS: 'badge-success',
+    ELIGIBLE: 'badge-success',
+    QUEUED: 'badge-info',
     PENDING_MANUAL: 'badge-warning',
     MANUAL_ACTION_REQUIRED: 'badge-warning',
+    NOT_MATCHED: 'badge-secondary',
     FAILED: 'badge-danger',
   };
-  const label = status === 'SUCCESS' ? 'VERIFIED SUBMITTED' : (status === 'MANUAL_ACTION_REQUIRED' ? 'MANUAL ACTION' : status);
+  let label = status;
+  if (status === 'SUCCESS') label = 'VERIFIED SUBMITTED';
+  else if (status === 'ELIGIBLE') label = 'ELIGIBLE';
+  else if (status === 'QUEUED') label = 'QUEUED';
+  else if (status === 'MANUAL_ACTION_REQUIRED' || status === 'PENDING_MANUAL') label = 'MANUAL ACTION';
+  else if (status === 'NOT_MATCHED') label = 'NOT MATCHED';
   return `<span class="badge ${map[status] || ''}">${label}</span>`;
 }
 

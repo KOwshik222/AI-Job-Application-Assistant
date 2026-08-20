@@ -145,7 +145,7 @@ async def test_partial_search_results(monkeypatch):
         "posted_at": "2026-08-20",
     }
 
-    async def fake_inspect(url, raw_title, role):
+    async def fake_inspect(url, raw_title=None, role=None, *args, **kwargs):
         if "failing" in url:
             return None
         return mock_valid_job

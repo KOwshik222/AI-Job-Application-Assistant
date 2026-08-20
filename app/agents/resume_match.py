@@ -29,7 +29,7 @@ async def resume_match_agent(state: AgentState, session: AsyncSession | None = N
     logger.info("RESUME CHUNKS: %d", chunk_count)
 
     matched: list[dict] = []
-    pending_below_threshold: list[dict] = []
+    not_matched: list[dict] = []
     errors: list[str] = []
 
     repo = Repository(session) if session else None
@@ -47,29 +47,34 @@ async def resume_match_agent(state: AgentState, session: AsyncSession | None = N
                 logger.info("MATCH RESULT: ERROR")
                 errors.append(f"{job.company} ({job.title}): {result.match_rationale}")
             elif result.match_score >= threshold:
-                logger.info("MATCH RESULT: PASS")
+                logger.info("APPLICATION ELIGIBILITY: %s / %s (score=%d >= %d) -> ELIGIBLE_FOR_APPLICATION", job.company, job.title, result.match_score, threshold)
+                logger.info("MATCH RESULT: PASS (ELIGIBLE)")
                 matched.append(result.model_dump())
-            else:
-                logger.info("MATCH RESULT: REJECT (BELOW THRESHOLD)")
-                # [5] If score < threshold, record as manual/rejected item, NOT silently discarded
-                manual_item = ManualActionItem(
-                    company=job.company,
-                    job_url=job.application_url,
-                    reason=f"Match score {result.match_score}% is below threshold {threshold}%",
-                )
-                pending_below_threshold.append(manual_item.model_dump())
 
                 if repo:
                     db_job = await repo.upsert_job(job)
-                    app_rec = await repo.create_application(
+                    await repo.create_application(
                         user_id=state["user_id"],
                         job_id=db_job.job_id,
                         resume_id=state["resume_id"],
-                        status="PENDING_MANUAL",
+                        status="ELIGIBLE",
                         match_score=result.match_score,
                         run_id=state["run_id"],
                     )
-                    await repo.create_manual_action(state["user_id"], manual_item, app_rec.application_id)
+            else:
+                logger.info("MATCH RESULT: REJECT (NOT_MATCHED, score=%d < %d)", result.match_score, threshold)
+                not_matched.append(result.model_dump())
+
+                if repo:
+                    db_job = await repo.upsert_job(job)
+                    await repo.create_application(
+                        user_id=state["user_id"],
+                        job_id=db_job.job_id,
+                        resume_id=state["resume_id"],
+                        status="NOT_MATCHED",
+                        match_score=result.match_score,
+                        run_id=state["run_id"],
+                    )
         except Exception as exc:
             logger.error("Match failed for %s (%s): %s", job.company, job.title, exc)
             errors.append(f"Match failed for {job.company}: {exc}")
@@ -78,15 +83,16 @@ async def resume_match_agent(state: AgentState, session: AsyncSession | None = N
         await repo.commit()
 
     logger.info(
-        "MATCH SUMMARY: %d passed threshold (>= %d), %d recorded below threshold",
+        "MATCH SUMMARY: %d eligible (>= %d), %d not matched (< %d)",
         len(matched),
         threshold,
-        len(pending_below_threshold),
+        len(not_matched),
+        threshold,
     )
 
     return {
         "matched_jobs": matched,
-        "pending_manual_jobs": pending_below_threshold,
         "next_agent": "application" if matched else "notification",
         "errors": errors,
     }
+
