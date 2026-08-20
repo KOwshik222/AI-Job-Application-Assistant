@@ -219,13 +219,23 @@ def get_role_synonyms(role: str) -> list[str]:
 
 
 def is_role_compatible(job_title: str, target_role: str) -> bool:
-    """Semantic role compatibility check."""
+    """Semantic role compatibility check. Rejects generic company listing/career page titles."""
     if not target_role:
         return True
     t_low = target_role.lower().strip()
     j_low = job_title.lower().strip()
 
-    # Reject obvious non-tech / completely unrelated titles
+    # 1. Reject generic company listing/career titles (e.g. "Wisdom AI Jobs", "Google Careers", "Open Positions")
+    if any(re.search(pat, j_low) for pat in GENERIC_LISTING_TITLE_PATTERNS):
+        return False
+
+    # 2. Reject titles ending in "jobs", "careers", "openings", "vacancies" unless an explicit tech role word is present
+    if re.search(r"\b(?:jobs|careers|vacancies|openings|opportunities)$", j_low):
+        role_indicators = ["developer", "engineer", "scientist", "architect", "analyst", "specialist", "programmer", "consultant", "intern", "associate", "lead"]
+        if not any(r in j_low for r in role_indicators):
+            return False
+
+    # 3. Reject obvious non-tech / completely unrelated titles
     unrelated = [
         "sales", "marketing", "accountant", "accounting", "recruiter", "talent acquisition",
         "human resources", "hr manager", "nurse", "physician", "pharmacist", "attorney",
@@ -328,6 +338,20 @@ def build_targeted_search_queries(
     return queries
 
 
+# Patterns indicating generic company listing/career pages (NOT single job titles)
+GENERIC_LISTING_TITLE_PATTERNS = (
+    r"^[\w\s.-]+\s+(?:jobs|careers|vacancies|openings|opportunities)$",  # e.g. "Wisdom AI Jobs", "Google Careers"
+    r"^(?:jobs|careers|openings|open positions|current openings|all jobs|work at|working at|join us)\s+.*$",
+    r"^careers?\s*@\s*.*$",
+    r"^jobs?\s+at\s+.*$",
+    r"^(?:all\s+)?(?:open\s+)?(?:positions|roles|opportunities|vacancies)$",
+    r"^careers?\s+portal$",
+    r"^job\s+board$",
+    r"^join\s+our\s+team$",
+    r"^work\s+with\s+us$",
+    r"^search\s+jobs?$",
+)
+
 # Patterns that indicate search / category aggregator pages (not single jobs)
 AGGREGATOR_URL_PATTERNS = (
     r"/jobs/search",
@@ -374,6 +398,10 @@ AGGREGATOR_CONTENT_SIGNALS = [
     r"\bbrowse jobs by category\b",
     r"\btop \d+ careers\b",
     r"\binterview questions and answers\b",
+    r"\bexplore\s+all\s+(?:openings|jobs|roles|positions)\b",
+    r"\bsearch\s+(?:our\s+)?(?:open\s+)?(?:positions|jobs|openings)\b",
+    r"\bfilter\s+by\s+(?:department|location|team)\b",
+    r"\bview\s+all\s+(?:open\s+)?(?:positions|jobs|openings|roles)\b",
 ]
 
 
@@ -406,41 +434,149 @@ def canonicalize_url(raw_url: str) -> str:
 
 
 def is_candidate_url_structure(url: str) -> bool:
-    """Preliminary URL structure check to eliminate obvious search aggregator pages."""
-    parsed = urlparse(url.lower())
-    netloc = parsed.netloc
-    path = parsed.path
-    query = parsed.query
+    """Validate whether URL represents an individual job posting vs a company listing / career page.
+    
+    Returns True ONLY for specific single-job URLs. Rejects company-level career/listing pages across:
+    - Ashby (jobs.ashbyhq.com)
+    - Lever (jobs.lever.co)
+    - Greenhouse (boards.greenhouse.io)
+    - Workday (*.myworkdayjobs.com)
+    - SmartRecruiters (jobs.smartrecruiters.com)
+    - Workable (apply.workable.com)
+    - BambooHR (*.bamboohr.com)
+    - Breezy HR (*.breezy.hr)
+    - Rippling (ats.rippling.com)
+    - Recruitee (*.recruitee.com)
+    """
+    try:
+        parsed = urlparse(url.lower().strip())
+        netloc = parsed.netloc
+        path = parsed.path.rstrip("/")
+        query = parsed.query
+    except Exception:
+        return False
 
+    if not netloc:
+        return False
+
+    # 1. Non-job excluded domains
     if any(dom in netloc for dom in EXCLUDED_DOMAINS):
         return False
 
-    # Check for known ATS individual job URL patterns
-    ats_individual_patterns = [
-        r"boards\.greenhouse\.io/[^/]+/jobs/\d+",
-        r"jobs\.lever\.co/[^/]+/[a-f0-9-]+",
-        r"[\w-]+\.myworkdayjobs\.com/[^/]+/[\w-]+/job/",
-        r"jobs\.smartrecruiters\.com/[^/]+/[a-zA-Z0-9-]+",
-        r"jobs\.ashbyhq\.com/[^/]+/[a-f0-9-]+",
-        r"apply\.workable\.com/[^/]+/j/[A-Z0-9]+",
-        r"careers\.[^/]+/job/",
-        r"linkedin\.com/jobs/view/\d+",
-        r"indeed\.com/viewjob",
-        r"indeed\.com/rc/clk",
-        r"/careers/[^/]+/job/[^/]+",
-        r"/jobs/[^/]+/[a-f0-9-]+",
-    ]
-    for pattern in ats_individual_patterns:
-        if re.search(pattern, f"{netloc}{path}"):
-            return True
-
-    # Reject known search/category aggregator paths
+    # 2. Reject known search/category aggregator paths & queries
     for pattern in AGGREGATOR_URL_PATTERNS:
         if re.search(pattern, path) or re.search(pattern, f"?{query}"):
             return False
 
-    # Reject bare root domain or top-level /jobs or /careers
-    if path in ("", "/", "/jobs", "/careers", "/jobs/", "/careers/"):
+    # 3. Reject bare root domain or top-level /jobs or /careers
+    if path in ("", "/", "/jobs", "/careers", "/openings", "/positions", "/vacancies", "/all-jobs", "/join-us", "/work-with-us"):
+        return False
+
+    segments = [s for s in path.split("/") if s]
+
+    # 4. ATS Provider-Specific Checks for Company Listing vs Individual Job URL
+
+    # Ashby (jobs.ashbyhq.com):
+    # - Company listing: https://jobs.ashbyhq.com/<company> (1 segment)
+    # - Individual job: https://jobs.ashbyhq.com/<company>/<job_id> (>= 2 segments)
+    if "jobs.ashbyhq.com" in netloc or "ashbyhq.com" in netloc:
+        if len(segments) < 2:
+            return False
+        return True
+
+    # Lever (jobs.lever.co):
+    # - Company listing: https://jobs.lever.co/<company> (1 segment)
+    # - Individual job: https://jobs.lever.co/<company>/<job_id> (>= 2 segments)
+    if "jobs.lever.co" in netloc or "lever.co" in netloc:
+        if len(segments) < 2:
+            return False
+        return True
+
+    # SmartRecruiters (jobs.smartrecruiters.com):
+    # - Company listing: https://jobs.smartrecruiters.com/<company> (1 segment)
+    # - Individual job: https://jobs.smartrecruiters.com/<company>/<job_id_or_slug> (>= 2 segments)
+    if "jobs.smartrecruiters.com" in netloc or "smartrecruiters.com" in netloc:
+        if len(segments) < 2:
+            return False
+        return True
+
+    # Greenhouse (boards.greenhouse.io, job-boards.greenhouse.io):
+    # - Company listing: https://boards.greenhouse.io/<company> or /<company>/jobs
+    # - Individual job: https://boards.greenhouse.io/<company>/jobs/<job_id>
+    if "greenhouse.io" in netloc:
+        if not re.search(r"/jobs/[a-zA-Z0-9_-]+", path) and "token=" not in query and "gh_jid=" not in query:
+            return False
+        return True
+
+    # Workday (*.myworkdayjobs.com):
+    # - Company listing: https://tenant.wd12.myworkdayjobs.com/en-US/Site (no /job/)
+    # - Individual job: https://tenant.wd12.myworkdayjobs.com/en-US/Site/job/Job-Title_JR123
+    if "myworkdayjobs.com" in netloc:
+        if "/job/" not in path:
+            return False
+        return True
+
+    # Workable (apply.workable.com):
+    # - Company listing: https://apply.workable.com/<company> (no /j/)
+    # - Individual job: https://apply.workable.com/<company>/j/<job_id>
+    if "workable.com" in netloc:
+        if "/j/" not in path:
+            return False
+        return True
+
+    # BambooHR (*.bamboohr.com):
+    # - Company listing: https://company.bamboohr.com/careers
+    # - Individual job: https://company.bamboohr.com/careers/<job_id>
+    if "bamboohr.com" in netloc:
+        if not re.search(r"/(?:careers|jobs)/[a-zA-Z0-9_-]+", path) and "id=" not in query:
+            return False
+        return True
+
+    # Breezy HR (*.breezy.hr):
+    # - Company listing: https://company.breezy.hr
+    # - Individual job: https://company.breezy.hr/p/<job_id>
+    if "breezy.hr" in netloc:
+        if "/p/" not in path:
+            return False
+        return True
+
+    # Rippling (ats.rippling.com):
+    # - Company listing: https://ats.rippling.com/<company>/jobs
+    # - Individual job: https://ats.rippling.com/<company>/jobs/<job_id>
+    if "rippling.com" in netloc:
+        if not re.search(r"/[^/]+/jobs/[a-zA-Z0-9_-]+", path):
+            return False
+        return True
+
+    # Recruitee (*.recruitee.com):
+    # - Company listing: https://company.recruitee.com
+    # - Individual job: https://company.recruitee.com/o/<slug>
+    if "recruitee.com" in netloc:
+        if "/o/" not in path:
+            return False
+        return True
+
+    # 5. General Career Site Checks
+    # Common individual job path patterns
+    general_job_patterns = [
+        r"/job/[a-zA-Z0-9_-]+",
+        r"/jobs/[a-zA-Z0-9_-]+",
+        r"/career/[a-zA-Z0-9_-]+",
+        r"/careers/[a-zA-Z0-9_-]+",
+        r"/position/[a-zA-Z0-9_-]+",
+        r"/positions/[a-zA-Z0-9_-]+",
+        r"/opening/[a-zA-Z0-9_-]+",
+        r"/openings/[a-zA-Z0-9_-]+",
+        r"/viewjob",
+        r"/view/\d+",
+        r"/details/\d+",
+    ]
+    for pattern in general_job_patterns:
+        if re.search(pattern, path):
+            return True
+
+    # If URL path has only 1 segment (e.g. /careers or /company-name) on non-ATS site, reject
+    if len(segments) <= 1:
         return False
 
     return True
@@ -515,6 +651,11 @@ def _extract_job_from_soup(
     candidate_experience: int | None = None,
 ) -> dict | None:
     """Extract job data from parsed HTML soup with role & experience validation."""
+    # 0. Reject company listing / career URLs
+    if not is_candidate_url_structure(url):
+        logger.debug("Page rejected as company listing / career URL: %s", url)
+        return None
+
     # 1. Multi-job aggregator detection in page content
     for pattern in AGGREGATOR_CONTENT_SIGNALS:
         if re.search(pattern, page_text):
@@ -680,6 +821,10 @@ async def fetch_and_inspect_job_page(
     candidate_experience: int | None = None,
 ) -> dict | None:
     """Fetch the actual web page, inspect its content, and extract verified single-job data."""
+    if not is_candidate_url_structure(url):
+        logger.debug("URL rejected prior to fetch as company listing/career page: %s", url)
+        return None
+
     t0 = time.monotonic()
     headers = {
         "User-Agent": (

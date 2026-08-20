@@ -34,7 +34,68 @@ def test_candidate_url_structure_ats():
     assert is_candidate_url_structure("https://jobs.lever.co/netflix/a1b2c3d4-e5f6") is True
     assert is_candidate_url_structure("https://nvidia.myworkdayjobs.com/NVIDIA/job/AI-Engineer") is True
     assert is_candidate_url_structure("https://jobs.smartrecruiters.com/Acme/123456") is True
+    assert is_candidate_url_structure("https://jobs.ashbyhq.com/Wisdom-AI/0a9c84e1-2b0e-4361-b552-87ff81db09bf") is True
+    assert is_candidate_url_structure("https://apply.workable.com/techcorp/j/12345ABCDE") is True
     assert is_candidate_url_structure("https://www.linkedin.com/jobs/view/3829102938") is True
+
+
+def test_ashby_company_listing_rejected():
+    """Ashby company career/listing pages must be rejected."""
+    assert is_candidate_url_structure("https://jobs.ashbyhq.com/Wisdom-AI") is False
+    assert is_candidate_url_structure("https://jobs.ashbyhq.com/Wisdom-AI/") is False
+    assert is_candidate_url_structure("https://jobs.ashbyhq.com/AcmeCorp") is False
+
+
+def test_ashby_individual_job_accepted():
+    """Ashby individual job URLs must be accepted."""
+    assert is_candidate_url_structure("https://jobs.ashbyhq.com/Wisdom-AI/0a9c84e1-2b0e-4361-b552-87ff81db09bf") is True
+    assert is_candidate_url_structure("https://jobs.ashbyhq.com/Acme/junior-ai-developer-418f7d98") is True
+
+
+def test_lever_company_listing_rejected():
+    """Lever company career/listing pages must be rejected."""
+    assert is_candidate_url_structure("https://jobs.lever.co/netflix") is False
+    assert is_candidate_url_structure("https://jobs.lever.co/netflix/") is False
+    assert is_candidate_url_structure("https://jobs.lever.co/spotify") is False
+
+
+def test_lever_individual_job_accepted():
+    """Lever individual job URLs must be accepted."""
+    assert is_candidate_url_structure("https://jobs.lever.co/netflix/4a796e95-7182-4217-bfef-c5b9f71c4c1a") is True
+    assert is_candidate_url_structure("https://jobs.lever.co/spotify/e2c65a78-9012-4321-9876-123456789abc") is True
+
+
+def test_workday_company_listing_rejected():
+    """Workday company career/listing pages (without /job/) must be rejected."""
+    assert is_candidate_url_structure("https://tbc.wd12.myworkdayjobs.com/en-US/LyricCareers") is False
+    assert is_candidate_url_structure("https://tbc.wd12.myworkdayjobs.com/LyricCareers/") is False
+    assert is_candidate_url_structure("https://db.wd3.myworkdayjobs.com/en-US/DBWebsite") is False
+
+
+def test_workday_individual_job_accepted():
+    """Workday individual job URLs (with /job/) must be accepted."""
+    assert is_candidate_url_structure("https://tbc.wd12.myworkdayjobs.com/en-US/LyricCareers/job/Software-Engineer-I--AI_JR884") is True
+    assert is_candidate_url_structure("https://db.wd3.myworkdayjobs.com/en-US/DBWebsite/job/AI-Specialist_R0441888") is True
+
+
+def test_smartrecruiters_company_listing_rejected():
+    """SmartRecruiters company career/listing pages must be rejected."""
+    assert is_candidate_url_structure("https://jobs.smartrecruiters.com/IFS1") is False
+    assert is_candidate_url_structure("https://jobs.smartrecruiters.com/IFS1/") is False
+    assert is_candidate_url_structure("https://jobs.smartrecruiters.com/BoschGroup") is False
+
+
+def test_smartrecruiters_individual_job_accepted():
+    """SmartRecruiters individual job URLs must be accepted."""
+    assert is_candidate_url_structure("https://jobs.smartrecruiters.com/IFS1/744000144170159-ai-machine-learning-engineer-python-loops") is True
+    assert is_candidate_url_structure("https://jobs.smartrecruiters.com/BoschGroup/12345678-software-engineer") is True
+
+
+def test_greenhouse_company_listing_rejected_and_individual_accepted():
+    """Greenhouse company listing rejected and individual job accepted."""
+    assert is_candidate_url_structure("https://boards.greenhouse.io/airbnb") is False
+    assert is_candidate_url_structure("https://boards.greenhouse.io/airbnb/jobs") is False
+    assert is_candidate_url_structure("https://boards.greenhouse.io/airbnb/jobs/456789") is True
 
 
 def test_candidate_url_structure_rejects_aggregators_and_search():
@@ -64,6 +125,23 @@ def test_reject_listing_and_article_titles():
     ]
     for title in invalid_titles:
         assert any(k in title.lower() for k in EXCLUDED_TITLE_KEYWORDS), f"Failed to reject: {title}"
+
+
+def test_reject_company_listing_titles():
+    """Company listing page titles like 'Wisdom AI Jobs' or 'Google Careers' must be rejected."""
+    from mcp_server.tools.search_jobs import is_role_compatible
+    assert is_role_compatible("Wisdom AI Jobs", "AI Developer") is False
+    assert is_role_compatible("Google Careers", "AI Developer") is False
+    assert is_role_compatible("Open Positions", "AI Developer") is False
+    assert is_role_compatible("Careers at Acme", "AI Developer") is False
+    assert is_role_compatible("Acme Job Openings", "AI Developer") is False
+
+    # Valid job titles must be accepted
+    assert is_role_compatible("Junior AI Developer", "AI Developer") is True
+    assert is_role_compatible("AI/Machine Learning Engineer - Python", "AI Developer") is True
+    assert is_role_compatible("Software Engineer I, AI", "AI Developer") is True
+    assert is_role_compatible("AI Specialist", "AI Developer") is True
+
 
 
 @pytest.mark.asyncio
