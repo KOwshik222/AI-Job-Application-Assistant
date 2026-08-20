@@ -15,9 +15,17 @@ async def setup_db():
 
 @pytest.fixture
 async def client():
+    from app.services.mcp_client import get_mcp_client, shutdown_mcp_client
+
+    await shutdown_mcp_client()
+    mcp = get_mcp_client()
+    await mcp.connect()
+
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as c:
         yield c
+
+    await shutdown_mcp_client()
 
 
 @pytest.mark.asyncio

@@ -22,15 +22,18 @@ def test_compute_file_hash_deterministic(sample_pdf_path):
 
 def test_verify_resume_integrity_valid(sample_pdf_path):
     expected = compute_file_hash(sample_pdf_path)
-    assert verify_resume_integrity(sample_pdf_path, expected) is True
+    res = verify_resume_integrity(sample_pdf_path, expected)
+    assert res["valid"] is True
 
 
 def test_verify_resume_integrity_invalid(sample_pdf_path):
-    assert verify_resume_integrity(sample_pdf_path, "wrong_hash") is False
+    res = verify_resume_integrity(sample_pdf_path, "wrong_hash")
+    assert res["valid"] is False
 
 
 def test_verify_resume_integrity_missing_file():
-    assert verify_resume_integrity("/nonexistent/file.pdf", "abc") is False
+    res = verify_resume_integrity("/nonexistent/file.pdf", "abc")
+    assert res["valid"] is False
 
 
 def test_different_files_different_hashes(sample_pdf_path):

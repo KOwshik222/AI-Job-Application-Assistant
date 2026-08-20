@@ -24,7 +24,7 @@ async def test_apply_job_mock_success_with_hash(sample_pdf_path):
     assert data["job_title"] == "Software Engineer"
     assert data["resume_hash"] == expected_hash
     assert "confirmation" in data
-    assert verify_resume_integrity(sample_pdf_path, data["resume_hash"]) is True
+    assert verify_resume_integrity(sample_pdf_path, data["resume_hash"])["valid"] is True
 
 
 @pytest.mark.asyncio

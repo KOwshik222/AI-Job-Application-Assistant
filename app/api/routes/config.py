@@ -11,10 +11,9 @@ settings = get_settings()
 
 @router.get("/config")
 async def get_app_config():
-    from mcp_server.tools.send_email import is_smtp_configured
-
     llm_configured = not is_demo_mode()
     active_provider = settings.llm_provider.lower()
+    smtp_configured = bool(settings.smtp_user and settings.smtp_password)
 
     return {
         "service": "AI Job Application Assistant",
@@ -24,7 +23,7 @@ async def get_app_config():
         "rag_configured": llm_configured or True,  # RAG active via vectorstore or keyword fallback
         "tavily_configured": bool(settings.tavily_api_key),
         "langsmith_configured": bool(settings.langchain_api_key),
-        "smtp_configured": is_smtp_configured(),
+        "smtp_configured": smtp_configured,
         "max_applications_per_day": settings.max_applications_per_day,
         "match_threshold": settings.match_threshold,
     }

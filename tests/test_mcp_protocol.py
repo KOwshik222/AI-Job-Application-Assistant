@@ -158,12 +158,26 @@ async def test_mcp_unknown_tool_returns_error():
 
 
 def test_mcp_client_module_has_no_tool_imports():
-    """Verify the mcp_client module file contains no direct tool imports."""
+    """Verify the mcp_client module AST contains no direct tool imports."""
+    import ast
     import pathlib
+
     client_path = pathlib.Path("app/services/mcp_client.py")
-    if client_path.exists():
-        content = client_path.read_text()
-        assert "from mcp_server.tools" not in content
-        assert "import search_jobs_tool" not in content
-        assert "import apply_job_tool" not in content
-        assert "import send_email_tool" not in content
+    assert client_path.exists()
+    tree = ast.parse(client_path.read_text(encoding="utf-8"))
+
+    imported_modules = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imported_modules.append(alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                imported_modules.append(node.module)
+
+    for mod in imported_modules:
+        assert not mod.startswith("mcp_server.tools"), f"Forbidden import found: {mod}"
+        assert mod != "search_jobs_tool"
+        assert mod != "apply_job_tool"
+        assert mod != "send_email_tool"
+

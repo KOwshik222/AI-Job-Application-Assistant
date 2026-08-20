@@ -1,18 +1,19 @@
-"""MCP server exposing search_jobs, apply_job, send_email, resume_application."""
+"""MCP server exposing search_jobs, apply_job, send_email, resume_application over stdio."""
 
 import asyncio
 import json
+import logging
 from typing import Any
 
-from mcp.server import Server
+from mcp.server.lowlevel import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import TextContent, Tool
+import mcp.types as types
 
 from mcp_server.tools.apply_job import apply_job_tool, resume_application_tool
 from mcp_server.tools.search_jobs import search_jobs_tool
 from mcp_server.tools.send_email import send_email_tool
 
-server = Server("job-assistant-tools")
+logger = logging.getLogger(__name__)
 
 TOOLS = {
     "search_jobs": {
@@ -73,24 +74,43 @@ TOOLS = {
 }
 
 
-@server.list_tools()
-async def list_tools() -> list[Tool]:
-    return [
-        Tool(name=name, description=meta["description"], inputSchema=meta["schema"])
-        for name, meta in TOOLS.items()
-    ]
+async def handle_list_tools(ctx, params: types.PaginatedRequestParams | None) -> types.ListToolsResult:
+    return types.ListToolsResult(
+        tools=[
+            types.Tool(name=name, description=meta["description"], inputSchema=meta["schema"])
+            for name, meta in TOOLS.items()
+        ]
+    )
 
 
-@server.call_tool()
-async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
+async def handle_call_tool(ctx, params: types.CallToolRequestParams) -> types.CallToolResult:
+    name = params.name
     if name not in TOOLS:
-        raise ValueError(f"Unknown tool: {name}")
-    result = await TOOLS[name]["tool"](**arguments)
-    if isinstance(result, str):
-        text = result
-    else:
-        text = json.dumps(result)
-    return [TextContent(type="text", text=text)]
+        return types.CallToolResult(
+            content=[types.TextContent(type="text", text=json.dumps({"status": "FAILED", "error": f"Unknown tool: {name}"}))],
+            is_error=True,
+        )
+    args = params.arguments or {}
+    try:
+        result = await TOOLS[name]["tool"](**args)
+        if isinstance(result, str):
+            text = result
+        else:
+            text = json.dumps(result)
+        return types.CallToolResult(content=[types.TextContent(type="text", text=text)])
+    except Exception as exc:
+        logger.exception("Error executing MCP tool %s: %s", name, exc)
+        return types.CallToolResult(
+            content=[types.TextContent(type="text", text=json.dumps({"status": "FAILED", "error": str(exc)}))],
+            is_error=True,
+        )
+
+
+server = Server(
+    "job-assistant-tools",
+    on_list_tools=handle_list_tools,
+    on_call_tool=handle_call_tool,
+)
 
 
 async def main():
