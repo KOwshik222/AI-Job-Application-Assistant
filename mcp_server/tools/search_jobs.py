@@ -1,4 +1,7 @@
-"""MCP tool: search_jobs — fetches, inspects, validates, and extracts individual job postings."""
+"""MCP tool: search_jobs — fetches, inspects, validates, and extracts individual job postings.
+
+Includes Playwright fallback for JavaScript-rendered job pages.
+"""
 
 import hashlib
 import json
@@ -151,6 +154,16 @@ GENERIC_COMPANY_PATTERNS = (
     r"foundit",
 )
 
+# Aggregator content signals detected in page body
+AGGREGATOR_CONTENT_SIGNALS = [
+    r"\bshowing \d+[-–]\d+ of \d+ jobs\b",
+    r"\b\d+[\+,\d]* jobs found\b",
+    r"\bsearch results for\b",
+    r"\bbrowse jobs by category\b",
+    r"\btop \d+ careers\b",
+    r"\binterview questions and answers\b",
+]
+
 
 def canonicalize_url(raw_url: str) -> str:
     """Strip tracking parameters and fragments to produce a clean canonical URL."""
@@ -282,45 +295,10 @@ def _extract_from_json_ld(soup: BeautifulSoup, url: str) -> dict | None:
     return None
 
 
-async def fetch_and_inspect_job_page(
-    url: str,
-    raw_title: str,
-    default_role: str,
-) -> dict | None:
-    """Fetch the actual web page, inspect its content, and extract verified single-job data."""
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
-        ),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    }
-
-    try:
-        async with httpx.AsyncClient(timeout=12.0, follow_redirects=True, verify=False) as client:
-            resp = await client.get(url, headers=headers)
-            if resp.status_code >= 400:
-                logger.debug("Page fetch returned status %d for %s", resp.status_code, url)
-                return None
-            html_content = resp.text
-    except Exception as exc:
-        logger.debug("Could not fetch page for %s: %s", url, exc)
-        return None
-
-    soup = BeautifulSoup(html_content, "html.parser")
-    page_text = _clean_html_text(html_content).lower()
-
+def _extract_job_from_soup(soup: BeautifulSoup, url: str, raw_title: str, page_text: str) -> dict | None:
+    """Extract job data from parsed HTML soup. Used by both HTTP and Playwright paths."""
     # 1. Multi-job aggregator detection in page content
-    aggregator_content_signals = [
-        r"\bshowing \d+[-–]\d+ of \d+ jobs\b",
-        r"\b\d+[\+,\d]* jobs found\b",
-        r"\bsearch results for\b",
-        r"\bbrowse jobs by category\b",
-        r"\btop \d+ careers\b",
-        r"\binterview questions and answers\b",
-    ]
-    for pattern in aggregator_content_signals:
+    for pattern in AGGREGATOR_CONTENT_SIGNALS:
         if re.search(pattern, page_text):
             logger.debug("Page rejected as multi-job aggregator for %s: pattern '%s'", url, pattern)
             return None
@@ -346,7 +324,6 @@ async def fetch_and_inspect_job_page(
             }
 
     # 3. HTML Element Extraction fallback
-    # Check H1 / Title
     h1 = soup.find("h1")
     title_text = h1.get_text().strip() if h1 else raw_title
 
@@ -359,13 +336,11 @@ async def fetch_and_inspect_job_page(
     company_name = og_site.get("content", "").strip() if og_site else ""
 
     if not company_name:
-        # ATS domain pattern (e.g. boards.greenhouse.io/stripe/jobs/123 -> Stripe)
         ats_match = re.search(r"(?:greenhouse\.io|lever\.co|ashbyhq\.com|smartrecruiters\.com|workable\.com)/([^/]+)", url)
         if ats_match:
             company_name = ats_match.group(1).replace("-", " ").title()
 
     if not company_name:
-        # Title parsing: "Role at Company" or "Company - Role"
         parts = [p.strip() for p in re.split(r"[-|–—:]", title_text) if p.strip()]
         if len(parts) >= 2:
             company_name = parts[0] if len(parts[0]) < len(parts[1]) else parts[1]
@@ -374,7 +349,7 @@ async def fetch_and_inspect_job_page(
     if not company_name or any(re.search(pat, company_name, re.IGNORECASE) for pat in GENERIC_COMPANY_PATTERNS):
         return None
 
-    # Extract location from common location selectors
+    # Extract location
     location = "Not Specified"
     loc_el = soup.find(class_=re.compile(r"location|job-location|workplace", re.IGNORECASE))
     if loc_el:
@@ -382,7 +357,7 @@ async def fetch_and_inspect_job_page(
         if len(loc_text) < 60:
             location = loc_text
 
-    # Extract description from main content area
+    # Extract description
     desc_el = soup.find(class_=re.compile(r"job-description|description|content|posting-requirements", re.IGNORECASE))
     desc_text = _clean_html_text(str(desc_el)) if desc_el else page_text[:2000]
 
@@ -400,6 +375,106 @@ async def fetch_and_inspect_job_page(
         "source": "tavily_verified",
         "posted_at": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
     }
+
+
+async def _playwright_render_page(url: str) -> str | None:
+    """Render a JavaScript-heavy page using Playwright and return the HTML content.
+    
+    Used as a fallback when HTTP fetch returns insufficient job data.
+    Reuses the existing Playwright dependency — does NOT create a second browser framework.
+    """
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError:
+        logger.debug("Playwright not available for JS rendering fallback")
+        return None
+
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context(
+                viewport={"width": 1280, "height": 900},
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                ),
+            )
+            page = await context.new_page()
+
+            try:
+                await page.goto(url, timeout=15000, wait_until="networkidle")
+                await page.wait_for_timeout(2000)  # Extra time for JS rendering
+                html_content = await page.content()
+                return html_content
+            except Exception as exc:
+                logger.debug("Playwright render failed for %s: %s", url, exc)
+                return None
+            finally:
+                await browser.close()
+    except Exception as exc:
+        logger.debug("Playwright launch failed: %s", exc)
+        return None
+
+
+async def fetch_and_inspect_job_page(
+    url: str,
+    raw_title: str,
+    default_role: str,
+) -> dict | None:
+    """Fetch the actual web page, inspect its content, and extract verified single-job data.
+    
+    Pipeline:
+        1. HTTP fetch → parse HTML/JSON-LD
+        2. If enough information → validate and accept
+        3. If NOT enough → Playwright fallback → render JS → re-extract
+        4. Validate individual job → accept/reject
+    """
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+
+    html_content = None
+    try:
+        async with httpx.AsyncClient(timeout=12.0, follow_redirects=True, verify=False) as client:
+            resp = await client.get(url, headers=headers)
+            if resp.status_code >= 400:
+                logger.debug("Page fetch returned status %d for %s", resp.status_code, url)
+                # Don't return None yet — try Playwright fallback for non-404 errors
+                if resp.status_code == 404:
+                    return None
+            else:
+                html_content = resp.text
+    except Exception as exc:
+        logger.debug("HTTP fetch failed for %s: %s — will try Playwright fallback", url, exc)
+
+    # Try extracting from HTTP response first
+    if html_content:
+        soup = BeautifulSoup(html_content, "html.parser")
+        page_text = _clean_html_text(html_content).lower()
+        result = _extract_job_from_soup(soup, url, raw_title, page_text)
+        if result:
+            return result
+        logger.debug("HTTP extraction insufficient for %s — trying Playwright fallback", url)
+
+    # === PLAYWRIGHT FALLBACK for JavaScript-rendered pages ===
+    rendered_html = await _playwright_render_page(url)
+    if rendered_html:
+        soup = BeautifulSoup(rendered_html, "html.parser")
+        page_text = _clean_html_text(rendered_html).lower()
+        result = _extract_job_from_soup(soup, url, raw_title, page_text)
+        if result:
+            result["source"] = "tavily_playwright_verified"
+            logger.info("✅ Playwright fallback extracted job from %s", url)
+            return result
+        logger.debug("Playwright fallback also failed to extract job from %s", url)
+
+    return None
 
 
 async def _search_tavily(

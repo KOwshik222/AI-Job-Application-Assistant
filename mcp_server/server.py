@@ -1,4 +1,4 @@
-"""MCP server exposing search_jobs, apply_job, send_email."""
+"""MCP server exposing search_jobs, apply_job, send_email, resume_application."""
 
 import asyncio
 import json
@@ -8,7 +8,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
-from mcp_server.tools.apply_job import apply_job_tool
+from mcp_server.tools.apply_job import apply_job_tool, resume_application_tool
 from mcp_server.tools.search_jobs import search_jobs_tool
 from mcp_server.tools.send_email import send_email_tool
 
@@ -40,6 +40,7 @@ TOOLS = {
                 "user_profile": {"type": "object"},
                 "company": {"type": "string"},
                 "job_title": {"type": "string"},
+                "expected_resume_hash": {"type": "string", "default": ""},
             },
             "required": ["application_url", "resume_file_path", "user_profile"],
         },
@@ -57,6 +58,17 @@ TOOLS = {
             "required": ["to_email", "summary"],
         },
         "description": "Send application summary email to user",
+    },
+    "resume_application": {
+        "tool": resume_application_tool,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "browser_session_id": {"type": "string"},
+            },
+            "required": ["browser_session_id"],
+        },
+        "description": "Resume a paused job application after user completes manual action (CAPTCHA, login, etc.)",
     },
 }
 

@@ -1,4 +1,8 @@
-"""Tests for MCP tools (search_jobs, apply_job, send_email)."""
+"""Tests for MCP tools (search_jobs, apply_job, send_email) — direct tool unit tests.
+
+These test the tool implementations directly (as they would run inside the MCP server process).
+For protocol-level tests, see test_mcp_protocol.py.
+"""
 
 import json
 import pytest
@@ -102,6 +106,25 @@ async def test_apply_job_missing_resume():
     data = json.loads(result)
     assert data["status"] == "FAILED"
     assert "not found" in data["reason"]
+
+
+@pytest.mark.asyncio
+async def test_apply_job_hash_mismatch_fails(sample_pdf_path):
+    """Resume with wrong hash should be rejected before upload."""
+    from mcp_server.tools.apply_job import apply_job_tool
+
+    result = await apply_job_tool(
+        application_url="https://example.com/apply",
+        resume_file_path=sample_pdf_path,
+        user_profile={"email": "test@example.com"},
+        company="Test Corp",
+        job_title="Dev",
+        expected_resume_hash="0000000000000000000000000000000000000000000000000000000000000000",
+        mock_mode=True,
+    )
+    data = json.loads(result)
+    assert data["status"] == "FAILED"
+    assert "integrity" in data["reason"].lower()
 
 
 @pytest.mark.asyncio

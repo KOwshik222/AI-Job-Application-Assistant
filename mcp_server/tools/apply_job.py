@@ -2,14 +2,13 @@
 
 import json
 import logging
+import os
 import re
 import sys
 import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
-
-from app.services.resume_storage import compute_file_hash
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +53,16 @@ CONFIRMATION_URL_PATTERNS = [
     r"/applied",
     r"/submitted",
 ]
+
+
+def _compute_file_hash(file_path: Path) -> str:
+    """Compute SHA-256 hash of a file."""
+    import hashlib
+    sha = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            sha.update(chunk)
+    return sha.hexdigest()
 
 
 async def _detect_security_barrier(page) -> str | None:
@@ -295,12 +304,19 @@ def _resolve_adapter(url: str, page, profile: dict, resume_path: Path) -> BaseAp
     return GenericATSAdapter(page, profile, resume_path)
 
 
+def _get_browser_headless() -> bool:
+    """Read BROWSER_HEADLESS from environment (MCP server runs as separate process)."""
+    val = os.environ.get("BROWSER_HEADLESS", "true").lower()
+    return val not in ("false", "0", "no")
+
+
 async def apply_job_tool(
     application_url: str,
     resume_file_path: str,
     user_profile: dict,
     company: str = "",
     job_title: str = "",
+    expected_resume_hash: str = "",
     mock_mode: bool = False,
 ) -> str:
     """MCP tool: Apply to a specific job opening using the original resume PDF."""
@@ -332,7 +348,20 @@ async def apply_job_tool(
             "resume_used": str(resume_file_path),
         })
 
-    resume_hash = compute_file_hash(resume_path)
+    # Verify resume integrity BEFORE any upload
+    resume_hash = _compute_file_hash(resume_path)
+    if expected_resume_hash and resume_hash != expected_resume_hash:
+        return json.dumps({
+            "status": "FAILED",
+            "company": company,
+            "job_title": job_title,
+            "application_url": application_url,
+            "reason": "Original resume integrity check failed — file hash does not match stored original",
+            "confirmation": "",
+            "submitted_at": None,
+            "resume_hash": resume_hash,
+            "resume_used": str(resume_file_path),
+        })
 
     # In mock mode (e.g. unit testing or demo simulation), return mock result
     if mock_mode:
@@ -348,6 +377,7 @@ async def apply_job_tool(
                 "submitted_at": None,
                 "resume_hash": resume_hash,
                 "resume_used": str(resume_path.resolve()),
+                "browser_session_id": "",
             })
         return json.dumps({
             "status": "SUCCESS",
@@ -382,9 +412,11 @@ async def apply_job_tool(
             "resume_hash": resume_hash,
         })
 
+    headless = _get_browser_headless()
+
     async with async_playwright() as p:
         browser = await p.chromium.launch(
-            headless=True,  # Production headless execution
+            headless=headless,
             slow_mo=200,
         )
         context = await browser.new_context(
@@ -406,6 +438,44 @@ async def apply_job_tool(
             barrier = await _detect_security_barrier(page)
             if barrier:
                 logger.info("🔐 Security barrier detected: %s for %s", barrier, company)
+
+                # When headless=false (human-in-the-loop mode):
+                # Keep the browser alive and return session info
+                if not headless:
+                    # Import session manager only when needed (lazy)
+                    try:
+                        from app.services.browser_sessions import get_browser_session_manager
+                        manager = get_browser_session_manager()
+                        session = manager.create_session(
+                            application_url=application_url,
+                            company=company,
+                            job_title=job_title,
+                            job_id="",
+                            barrier_type=barrier,
+                            page=page,
+                            browser=browser,
+                            context=context,
+                            user_profile=user_profile,
+                            resume_path=str(resume_path),
+                            expected_resume_hash=expected_resume_hash,
+                        )
+                        # DO NOT close browser — user needs it
+                        return json.dumps({
+                            "status": "MANUAL_ACTION_REQUIRED",
+                            "company": company,
+                            "job_title": job_title,
+                            "application_url": application_url,
+                            "reason": f"Security barrier / {barrier.replace('_', ' ').title()} required — browser kept alive for manual action",
+                            "confirmation": "",
+                            "submitted_at": None,
+                            "resume_hash": resume_hash,
+                            "resume_used": str(resume_path.resolve()),
+                            "browser_session_id": session.session_id,
+                        })
+                    except ImportError:
+                        pass  # Session manager not available in MCP server process — fallback below
+
+                # Headless mode — can't keep browser for user
                 return json.dumps({
                     "status": "MANUAL_ACTION_REQUIRED",
                     "company": company,
@@ -416,6 +486,7 @@ async def apply_job_tool(
                     "submitted_at": None,
                     "resume_hash": resume_hash,
                     "resume_used": str(resume_path.resolve()),
+                    "browser_session_id": "",
                 })
 
             # 2. Resolve adapter & fill form
@@ -435,6 +506,7 @@ async def apply_job_tool(
                     "submitted_at": None,
                     "resume_hash": resume_hash,
                     "resume_used": str(resume_path.resolve()),
+                    "browser_session_id": "",
                 })
 
             # 4. Strictly verify submission success evidence
@@ -466,6 +538,7 @@ async def apply_job_tool(
                     "submitted_at": None,
                     "resume_hash": resume_hash,
                     "resume_used": str(resume_path.resolve()),
+                    "browser_session_id": "",
                 })
 
             # Submit was clicked but success could not be verified
@@ -497,3 +570,135 @@ async def apply_job_tool(
             })
         finally:
             await browser.close()
+
+
+async def resume_application_tool(
+    browser_session_id: str,
+) -> str:
+    """MCP tool: Resume a paused application after user completes manual action.
+    
+    Checks if the security barrier has been cleared, then continues the
+    application flow (fill form → submit → verify).
+    """
+    try:
+        from app.services.browser_sessions import get_browser_session_manager
+    except ImportError:
+        return json.dumps({
+            "status": "FAILED",
+            "reason": "Browser session manager not available",
+            "browser_session_id": browser_session_id,
+        })
+
+    manager = get_browser_session_manager()
+    session = manager.get_session(browser_session_id)
+
+    if not session:
+        return json.dumps({
+            "status": "FAILED",
+            "reason": f"Browser session '{browser_session_id}' not found or expired",
+            "browser_session_id": browser_session_id,
+        })
+
+    if not session.page:
+        await manager.cleanup_session(browser_session_id)
+        return json.dumps({
+            "status": "FAILED",
+            "reason": "Browser page is no longer available",
+            "browser_session_id": browser_session_id,
+        })
+
+    try:
+        # Check if security barrier is still present
+        barrier = await _detect_security_barrier(session.page)
+        if barrier:
+            return json.dumps({
+                "status": "MANUAL_ACTION_REQUIRED",
+                "company": session.company,
+                "job_title": session.job_title,
+                "application_url": session.application_url,
+                "reason": f"Security barrier still present: {barrier.replace('_', ' ').title()}",
+                "browser_session_id": browser_session_id,
+            })
+
+        # Barrier cleared — continue application
+        resume_path = Path(session.resume_path)
+
+        # Verify resume integrity again before proceeding
+        if session.expected_resume_hash and resume_path.exists():
+            current_hash = _compute_file_hash(resume_path)
+            if current_hash != session.expected_resume_hash:
+                await manager.cleanup_session(browser_session_id)
+                return json.dumps({
+                    "status": "FAILED",
+                    "company": session.company,
+                    "job_title": session.job_title,
+                    "reason": "Resume integrity check failed during resume flow",
+                    "browser_session_id": browser_session_id,
+                })
+
+        adapter = _resolve_adapter(
+            session.application_url,
+            session.page,
+            session.user_profile,
+            resume_path,
+        )
+        filled, reason, _ = await adapter.fill_and_submit()
+
+        # Check for new barriers after submit
+        barrier_post = await _detect_security_barrier(session.page)
+        if barrier_post:
+            return json.dumps({
+                "status": "MANUAL_ACTION_REQUIRED",
+                "company": session.company,
+                "job_title": session.job_title,
+                "application_url": session.application_url,
+                "reason": f"New barrier after submission: {barrier_post.replace('_', ' ').title()}",
+                "browser_session_id": browser_session_id,
+            })
+
+        # Verify submission
+        verified, confirmation = await _verify_submission_success(
+            session.page, session.application_url
+        )
+
+        # Clean up session
+        await manager.cleanup_session(browser_session_id)
+
+        if verified:
+            resume_hash = _compute_file_hash(resume_path) if resume_path.exists() else ""
+            return json.dumps({
+                "status": "SUCCESS",
+                "company": session.company,
+                "job_title": session.job_title,
+                "application_url": session.application_url,
+                "reason": "Application submitted after manual action",
+                "confirmation": confirmation,
+                "submitted_at": datetime.now(timezone.utc).isoformat(),
+                "resume_hash": resume_hash,
+            })
+
+        if not filled:
+            return json.dumps({
+                "status": "FAILED",
+                "company": session.company,
+                "job_title": session.job_title,
+                "application_url": session.application_url,
+                "reason": f"Could not complete form after manual action: {reason}",
+            })
+
+        return json.dumps({
+            "status": "FAILED",
+            "company": session.company,
+            "job_title": session.job_title,
+            "application_url": session.application_url,
+            "reason": "Submission could not be verified after manual action",
+        })
+
+    except Exception as exc:
+        logger.error("Error resuming application %s: %s", browser_session_id, exc)
+        await manager.cleanup_session(browser_session_id)
+        return json.dumps({
+            "status": "FAILED",
+            "reason": f"Error resuming application: {exc}",
+            "browser_session_id": browser_session_id,
+        })

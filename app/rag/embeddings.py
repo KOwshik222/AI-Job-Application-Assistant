@@ -8,6 +8,7 @@ settings = get_settings()
 
 
 def is_demo_mode() -> bool:
+    """Demo mode is ONLY active when explicitly set via DEMO_MODE=true."""
     return settings.is_demo_mode
 
 

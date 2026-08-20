@@ -39,6 +39,8 @@ class Settings(BaseSettings):
 
     mcp_server_command: str = "python"
     mcp_server_args: str = "-m,mcp_server.server"
+    mcp_connection_timeout: int = 30
+    mcp_tool_timeout: int = 60
 
     embedding_model: str = "text-embedding-3-small"
     chat_model: str = "gpt-4o-mini"
@@ -46,18 +48,24 @@ class Settings(BaseSettings):
     gemini_embedding_model: str = "models/text-embedding-004"
     test_mode: bool = False
 
+    # Explicit demo mode — NEVER auto-derived from missing API keys
+    demo_mode: bool = False
+
+    # Browser configuration for human-in-the-loop
+    browser_headless: bool = True
+    browser_session_timeout: int = 600  # seconds before abandoned session cleanup
+
     @property
     def active_gemini_key(self) -> str:
         return self.gemini_api_key or self.google_api_key
 
     @property
     def is_demo_mode(self) -> bool:
-        provider = self.llm_provider.lower()
-        if provider == "gemini":
-            return not bool(self.active_gemini_key)
-        elif provider == "openai":
-            return not bool(self.openai_api_key)
-        return not bool(self.active_gemini_key or self.openai_api_key)
+        """Demo mode is ONLY active when explicitly configured via DEMO_MODE=true.
+        
+        Missing API keys in production = configuration error, NOT silent demo mode.
+        """
+        return self.demo_mode
 
     @property
     def resume_dir(self) -> Path:

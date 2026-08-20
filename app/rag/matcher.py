@@ -6,9 +6,8 @@ from langsmith import traceable
 from pydantic import BaseModel, Field
 
 from app.config import get_settings
-from app.rag.embeddings import is_demo_mode
 from app.rag.keyword_matcher import keyword_match_job
-from app.rag.llm_provider import get_llm
+from app.rag.llm_provider import LLMProviderError, get_llm
 from app.rag.vectorstore import get_resume_text, get_retriever
 from app.schemas import JobListing, MatchedJob, UserProfile
 
@@ -64,7 +63,7 @@ def match_job_to_resume(
     In production mode: Uses configured LLM. If LLM fails, returns MATCHING_FAILED (never silently falls back).
     In demo mode: Clearly identified demo matcher.
     """
-    if is_demo_mode():
+    if settings.is_demo_mode:
         logger.info("DEMO MODE: Evaluating match via demo keyword matcher.")
         resume_text = get_resume_text(resume_id)
         return keyword_match_job(job, user_profile, resume_text)

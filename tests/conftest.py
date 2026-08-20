@@ -5,6 +5,7 @@ import os
 os.environ["MAX_APPLICATIONS_PER_DAY"] = "20"
 os.environ["MATCH_THRESHOLD"] = "75"
 os.environ["SAME_COMPANY_COOLDOWN_DAYS"] = "30"
+os.environ["DEMO_MODE"] = "true"
 
 # Disable external service integrations for test stability and speed
 os.environ["LANGCHAIN_TRACING_V2"] = "false"

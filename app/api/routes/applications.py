@@ -10,6 +10,10 @@ from app.schemas import (
     ApplicationResponse,
     ApplicationSummaryResponse,
     ApplicationsListResponse,
+    BrowserSessionResponse,
+    BrowserSessionsListResponse,
+    ContinueApplicationRequest,
+    ContinueApplicationResponse,
     ManualActionItem,
     ManualActionResponse,
     ManualActionsListResponse,
@@ -115,3 +119,43 @@ async def application_summary(
             if e
         ] or ([data["error"]] if data.get("error") else []),
     )
+
+
+@router.post("/applications/continue")
+async def continue_application(
+    request: ContinueApplicationRequest,
+):
+    """Continue a paused application after user completes manual action."""
+    from app.services.mcp_client import get_mcp_client
+
+    mcp = get_mcp_client()
+    result = await mcp.call_tool(
+        "resume_application",
+        {"browser_session_id": request.browser_session_id},
+    )
+
+    return ContinueApplicationResponse(
+        status=result.get("status", "FAILED"),
+        company=result.get("company", ""),
+        job_title=result.get("job_title", ""),
+        application_url=result.get("application_url", ""),
+        reason=result.get("reason", ""),
+        confirmation=result.get("confirmation", ""),
+        browser_session_id=request.browser_session_id,
+    )
+
+
+@router.get("/browser-sessions")
+async def list_browser_sessions():
+    """List all active browser sessions waiting for user action."""
+    from app.services.browser_sessions import get_browser_session_manager
+
+    manager = get_browser_session_manager()
+    sessions = manager.list_active_sessions()
+
+    return BrowserSessionsListResponse(
+        sessions=[
+            BrowserSessionResponse(**s) for s in sessions
+        ]
+    )
+

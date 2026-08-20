@@ -28,13 +28,8 @@ async def application_agent(state: AgentState, session: AsyncSession) -> dict:
     resume_path = state["resume_file_path"]
     resume_record = await repo.get_resume(state["resume_id"])
 
-    # CRITICAL: Verify original resume integrity
-    if resume_record and not verify_resume_integrity(resume_path, resume_record.file_hash):
-        return {
-            "errors": ["Resume integrity verification failed — original file was modified"],
-            "application_complete": True,
-            "next_agent": "notification",
-        }
+    # Get expected hash from DB record
+    expected_hash = resume_record.file_hash if resume_record else ""
 
     applied: list[dict] = []
     pending: list[dict] = []
@@ -55,6 +50,35 @@ async def application_agent(state: AgentState, session: AsyncSession) -> dict:
         if job.application_url in seen_urls:
             continue
         seen_urls.add(job.application_url)
+
+        # CRITICAL: Verify original resume integrity BEFORE EVERY application
+        if expected_hash:
+            integrity = verify_resume_integrity(resume_path, expected_hash)
+            if not integrity["valid"]:
+                logger.error(
+                    "Resume integrity check FAILED for %s (%s): %s",
+                    job.company, job.title, integrity["reason"],
+                )
+                failed.append(
+                    ApplicationResult(
+                        job_id=job.job_id,
+                        company=job.company,
+                        job_url=job.application_url,
+                        status="FAILED",
+                        resume_used=resume_path,
+                        error=f"Original resume integrity check failed: {integrity['reason']}",
+                    ).model_dump()
+                )
+                # Stop ALL applications — resume is compromised
+                return {
+                    "applied_jobs": applied,
+                    "pending_manual_jobs": pending,
+                    "failed_jobs": failed,
+                    "applications_attempted": attempted,
+                    "errors": [integrity["reason"]],
+                    "application_complete": True,
+                    "next_agent": "notification",
+                }
 
         # Upsert job in DB
         db_job = await repo.upsert_job(job)
@@ -90,6 +114,7 @@ async def application_agent(state: AgentState, session: AsyncSession) -> dict:
                     "user_profile": profile.model_dump(),
                     "company": job.company,
                     "job_title": job.title,
+                    "expected_resume_hash": expected_hash,
                     "mock_mode": settings.is_demo_mode,
                 },
             )
@@ -103,11 +128,26 @@ async def application_agent(state: AgentState, session: AsyncSession) -> dict:
                 "reason": f"Tool execution error: {exc}",
                 "confirmation": "",
                 "submitted_at": None,
-                "resume_hash": resume_record.file_hash if resume_record else "",
+                "resume_hash": expected_hash,
             }
 
         attempted += 1
         status = result.get("status", "FAILED")
+
+        # Check for MCP unavailable
+        if status == "MCP_UNAVAILABLE":
+            logger.error("MCP server unavailable — cannot apply to %s", job.company)
+            failed.append(
+                ApplicationResult(
+                    job_id=job.job_id,
+                    company=job.company,
+                    job_url=job.application_url,
+                    status="FAILED",
+                    resume_used=resume_path,
+                    error="MCP server unavailable — cannot process application",
+                ).model_dump()
+            )
+            continue
 
         if status == "SUCCESS":
             await guardrails.record_application_attempt(state["user_id"])

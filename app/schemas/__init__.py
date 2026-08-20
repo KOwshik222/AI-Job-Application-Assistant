@@ -148,3 +148,32 @@ class ApplicationSummaryResponse(BaseModel):
     jobs_found: int = 0
     matched_jobs: int = 0
     errors: list[str] = Field(default_factory=list)
+
+
+class BrowserSessionResponse(BaseModel):
+    browser_session_id: str
+    application_url: str
+    company: str
+    job_title: str
+    barrier_type: str
+    status: str
+    created_at: str
+
+
+class BrowserSessionsListResponse(BaseModel):
+    sessions: list[BrowserSessionResponse]
+
+
+class ContinueApplicationRequest(BaseModel):
+    browser_session_id: str
+
+
+class ContinueApplicationResponse(BaseModel):
+    status: str
+    company: str = ""
+    job_title: str = ""
+    application_url: str = ""
+    reason: str = ""
+    confirmation: str = ""
+    browser_session_id: str = ""
+

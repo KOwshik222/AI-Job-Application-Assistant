@@ -59,8 +59,9 @@ class Guardrails:
 
         # 5. Resume integrity check
         if resume_file_path and expected_resume_hash:
-            if not verify_resume_integrity(resume_file_path, expected_resume_hash):
-                return False, "Original resume integrity verification failed"
+            integrity = verify_resume_integrity(resume_file_path, expected_resume_hash)
+            if not integrity["valid"]:
+                return False, f"Original resume integrity verification failed: {integrity['reason']}"
 
         # 6. Duplicate application check
         existing = await self.repo.get_application_by_user_job(user_id, job.job_id)
