@@ -1,15 +1,25 @@
-"""MCP tool: apply_job — browser automation with human-in-the-loop stops."""
+"""MCP tool: apply_job — browser automation with adapter architecture, verification, and human-in-the-loop."""
 
 import json
 import logging
+import re
+import sys
+import asyncio
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
+
+from app.services.resume_storage import compute_file_hash
 
 logger = logging.getLogger(__name__)
 
 MANUAL_TRIGGERS = [
     "captcha",
     "recaptcha",
+    "hcaptcha",
+    "turnstile",
+    "cloudflare",
+    "just a moment",
     "login",
     "sign in",
     "sign up",
@@ -20,38 +30,34 @@ MANUAL_TRIGGERS = [
     "mfa",
     "two-factor",
     "2fa",
-    "cloudflare",
-    "just a moment",
+    "create an account",
 ]
 
-# Domains that are job search directories or heavily bot-protected aggregators
-AGGREGATOR_DOMAINS = [
-    "linkedin.com",
-    "indeed.com",
-    "naukri.com",
-    "glassdoor.com",
-    "hirist.tech",
-    "wellfound.com",
-    "builtin.com",
-    "builtinpune.in",
-    "internshala.com",
-    "monster.com",
-    "foundit.in",
+CONFIRMATION_PATTERNS = [
+    r"thank\s+you\s+for\s+applying",
+    r"application\s+(?:has\s+been\s+)?submitted",
+    r"application\s+received",
+    r"we(?:\'ve|\s+have)\s+received\s+your\s+application",
+    r"successfully\s+applied",
+    r"application\s+confirmation",
+    r"your\s+application\s+was\s+sent",
+    r"thanks\s+for\s+your\s+interest",
+    r"confirmation\s+(?:number|id|code|#)\s*:\s*[\w-]+",
+]
+
+CONFIRMATION_URL_PATTERNS = [
+    r"/thanks",
+    r"/thank-you",
+    r"/thank_you",
+    r"/confirmation",
+    r"/success",
+    r"/applied",
+    r"/submitted",
 ]
 
 
-def _is_aggregator_url(url: str) -> bool:
-    parsed = urlparse(url.lower())
-    netloc = parsed.netloc
-    path = parsed.path
-    if any(domain in netloc for domain in AGGREGATOR_DOMAINS):
-        return True
-    if any(segment in path for segment in ["/jobs/", "/q-", "/role/l/"]):
-        return True
-    return False
-
-
-async def _detect_manual_required(page) -> str | None:
+async def _detect_security_barrier(page) -> str | None:
+    """Detect if page requires human intervention (CAPTCHA, Login, OTP, Cloudflare)."""
     try:
         content = (await page.content()).lower()
         for trigger in MANUAL_TRIGGERS:
@@ -62,84 +68,231 @@ async def _detect_manual_required(page) -> str | None:
     return None
 
 
-async def _wait_for_user_action(page, reason: str, timeout_ms: int = 60000) -> str | None:
-    """Wait for user to complete manual action (login/captcha) in the visible browser."""
-    logger.info(
-        "⏳ MANUAL ACTION REQUIRED: %s — Complete it in the browser window. "
-        "You have %d seconds.", reason, timeout_ms // 1000
-    )
-    elapsed = 0
-    poll_interval = 3000
-    while elapsed < timeout_ms:
-        await page.wait_for_timeout(poll_interval)
-        elapsed += poll_interval
-        still_blocked = await _detect_manual_required(page)
-        if not still_blocked:
-            logger.info("✅ Manual action completed! Continuing application...")
-            return None
-    return reason
+async def _verify_submission_success(page, initial_url: str) -> tuple[bool, str]:
+    """Verify whether application was genuinely submitted based on page evidence."""
+    current_url = page.url.lower()
 
+    # 1. URL pattern check
+    for pattern in CONFIRMATION_URL_PATTERNS:
+        if re.search(pattern, current_url) and current_url != initial_url.lower():
+            return True, f"Verified via confirmation URL: {page.url}"
 
-async def _fill_form_fields(page, user_profile: dict, resume_path: Path):
-    """Fill common application form fields."""
+    # 2. Text evidence check
     try:
-        file_inputs = await page.query_selector_all('input[type="file"]')
-        if file_inputs:
-            await file_inputs[0].set_input_files(str(resume_path.resolve()))
-            logger.info("📎 Resume uploaded")
-    except Exception as e:
-        logger.debug("File upload error: %s", e)
+        content = await page.content()
+        for pattern in CONFIRMATION_PATTERNS:
+            match = re.search(pattern, content, re.IGNORECASE)
+            if match:
+                snippet = match.group(0)
+                return True, f"Verified via confirmation text: '{snippet}'"
+    except Exception:
+        pass
 
-    email = user_profile.get("email", "")
-    if email:
-        for selector in [
-            'input[type="email"]',
-            'input[name*="email" i]',
-            'input[placeholder*="email" i]',
-            'input[id*="email" i]',
-        ]:
-            try:
-                el = await page.query_selector(selector)
-                if el and await el.is_visible():
-                    await el.fill(email)
-                    logger.info("📧 Email filled")
-                    break
-            except Exception:
-                continue
+    return False, "No confirmation message or redirect detected after submission."
 
-    name = user_profile.get("full_name", "")
-    if name:
-        for selector in [
-            'input[name*="name" i]',
-            'input[placeholder*="name" i]',
-            'input[id*="name" i]',
-            'input[autocomplete="name"]',
-        ]:
-            try:
-                el = await page.query_selector(selector)
-                if el and await el.is_visible():
-                    await el.fill(name)
-                    logger.info("👤 Name filled")
-                    break
-            except Exception:
-                continue
 
-    phone = user_profile.get("phone", "")
-    if phone:
-        for selector in [
-            'input[type="tel"]',
-            'input[name*="phone" i]',
-            'input[placeholder*="phone" i]',
-            'input[id*="phone" i]',
-        ]:
-            try:
-                el = await page.query_selector(selector)
+class BaseApplicationAdapter:
+    """Base adapter for portal automation."""
+
+    def __init__(self, page, user_profile: dict, resume_path: Path):
+        self.page = page
+        self.profile = user_profile
+        self.resume_path = resume_path
+
+    async def fill_and_submit(self) -> tuple[bool, str, str | None]:
+        """Returns (success, reason, confirmation_text)."""
+        raise NotImplementedError
+
+
+class GreenhouseAdapter(BaseApplicationAdapter):
+    """Adapter for Greenhouse job boards (boards.greenhouse.io)."""
+
+    async def fill_and_submit(self) -> tuple[bool, str, str | None]:
+        # Split name into first and last
+        full_name = self.profile.get("full_name", "").strip()
+        name_parts = full_name.split()
+        first_name = name_parts[0] if name_parts else "Candidate"
+        last_name = " ".join(name_parts[1:]) if len(name_parts) > 1 else "Applicant"
+
+        # First Name
+        for sel in ["#first_name", 'input[name="job_application[first_name]"]', 'input[autocomplete="given-name"]']:
+            el = await self.page.query_selector(sel)
+            if el and await el.is_visible():
+                await el.fill(first_name)
+                break
+
+        # Last Name
+        for sel in ["#last_name", 'input[name="job_application[last_name]"]', 'input[autocomplete="family-name"]']:
+            el = await self.page.query_selector(sel)
+            if el and await el.is_visible():
+                await el.fill(last_name)
+                break
+
+        # Email
+        email = self.profile.get("email", "")
+        for sel in ["#email", 'input[name="job_application[email]"]', 'input[type="email"]']:
+            el = await self.page.query_selector(sel)
+            if el and await el.is_visible():
+                await el.fill(email)
+                break
+
+        # Phone
+        phone = self.profile.get("phone", "")
+        if phone:
+            for sel in ["#phone", 'input[name="job_application[phone]"]', 'input[type="tel"]']:
+                el = await self.page.query_selector(sel)
                 if el and await el.is_visible():
                     await el.fill(phone)
-                    logger.info("📱 Phone filled")
                     break
-            except Exception:
-                continue
+
+        # Resume Upload
+        for sel in ['input[data-qa="input-resume"]', '#resume', 'input[type="file"]']:
+            file_input = await self.page.query_selector(sel)
+            if file_input:
+                await file_input.set_input_files(str(self.resume_path.resolve()))
+                logger.info("📎 Resume attached in Greenhouse form.")
+                break
+
+        # Submit
+        submit_btn = await self.page.query_selector('#submit_app, button[type="submit"], input[type="submit"]')
+        if submit_btn and await submit_btn.is_visible():
+            await submit_btn.click()
+            await self.page.wait_for_timeout(4000)
+            return True, "Submitted form", None
+
+        return False, "Could not locate Greenhouse submit button", None
+
+
+class LeverAdapter(BaseApplicationAdapter):
+    """Adapter for Lever job boards (jobs.lever.co)."""
+
+    async def fill_and_submit(self) -> tuple[bool, str, str | None]:
+        full_name = self.profile.get("full_name", "").strip()
+        email = self.profile.get("email", "")
+        phone = self.profile.get("phone", "")
+
+        # Name
+        name_input = await self.page.query_selector('input[name="name"]')
+        if name_input and await name_input.is_visible():
+            await name_input.fill(full_name)
+
+        # Email
+        email_input = await self.page.query_selector('input[name="email"]')
+        if email_input and await email_input.is_visible():
+            await email_input.fill(email)
+
+        # Phone
+        if phone:
+            phone_input = await self.page.query_selector('input[name="phone"]')
+            if phone_input and await phone_input.is_visible():
+                await phone_input.fill(phone)
+
+        # Resume
+        file_input = await self.page.query_selector('input[type="file"], input[name="resume"]')
+        if file_input:
+            await file_input.set_input_files(str(self.resume_path.resolve()))
+            logger.info("📎 Resume attached in Lever form.")
+
+        # Submit
+        submit_btn = await self.page.query_selector('button[data-qa="btn-submit"], button[type="submit"], #btn-submit')
+        if submit_btn and await submit_btn.is_visible():
+            await submit_btn.click()
+            await self.page.wait_for_timeout(4000)
+            return True, "Submitted Lever form", None
+
+        return False, "Could not locate Lever submit button", None
+
+
+class GenericATSAdapter(BaseApplicationAdapter):
+    """Generic form automation adapter with intelligent selector matching."""
+
+    async def fill_and_submit(self) -> tuple[bool, str, str | None]:
+        full_name = self.profile.get("full_name", "").strip()
+        email = self.profile.get("email", "")
+        phone = self.profile.get("phone", "")
+
+        # 1. Resume upload
+        file_inputs = await self.page.query_selector_all('input[type="file"]')
+        if file_inputs:
+            for fi in file_inputs:
+                try:
+                    await fi.set_input_files(str(self.resume_path.resolve()))
+                    logger.info("📎 Resume file uploaded to file input.")
+                    break
+                except Exception:
+                    continue
+
+        # 2. Email
+        if email:
+            for sel in ['input[type="email"]', 'input[name*="email" i]', 'input[placeholder*="email" i]', 'input[id*="email" i]']:
+                el = await self.page.query_selector(sel)
+                if el and await el.is_visible():
+                    try:
+                        await el.fill(email)
+                        break
+                    except Exception:
+                        continue
+
+        # 3. Name
+        if full_name:
+            # Check for first/last split
+            first_name_input = await self.page.query_selector('input[name*="first" i], input[placeholder*="first" i]')
+            last_name_input = await self.page.query_selector('input[name*="last" i], input[placeholder*="last" i]')
+            if first_name_input and last_name_input and await first_name_input.is_visible() and await last_name_input.is_visible():
+                name_parts = full_name.split()
+                await first_name_input.fill(name_parts[0])
+                await last_name_input.fill(" ".join(name_parts[1:]) if len(name_parts) > 1 else "")
+            else:
+                for sel in ['input[name*="name" i]', 'input[placeholder*="name" i]', 'input[id*="name" i]']:
+                    el = await self.page.query_selector(sel)
+                    if el and await el.is_visible():
+                        try:
+                            await el.fill(full_name)
+                            break
+                        except Exception:
+                            continue
+
+        # 4. Phone
+        if phone:
+            for sel in ['input[type="tel"]', 'input[name*="phone" i]', 'input[placeholder*="phone" i]', 'input[id*="phone" i]']:
+                el = await self.page.query_selector(sel)
+                if el and await el.is_visible():
+                    try:
+                        await el.fill(phone)
+                        break
+                    except Exception:
+                        continue
+
+        # 5. Look for submit button
+        submit_selectors = [
+            'button[type="submit"]',
+            'input[type="submit"]',
+            'button:has-text("Submit Application")',
+            'button:has-text("Apply Now")',
+            'button:has-text("Send Application")',
+            'button:has-text("Submit")',
+        ]
+        for sel in submit_selectors:
+            btn = await self.page.query_selector(sel)
+            if btn and await btn.is_visible():
+                try:
+                    await btn.click()
+                    await self.page.wait_for_timeout(3500)
+                    return True, "Clicked submit button", None
+                except Exception as e:
+                    logger.debug("Click failed on %s: %s", sel, e)
+
+        return False, "No clickable submit button found on page", None
+
+
+def _resolve_adapter(url: str, page, profile: dict, resume_path: Path) -> BaseApplicationAdapter:
+    """Resolve the appropriate adapter based on URL domain."""
+    domain = urlparse(url.lower()).netloc
+    if "greenhouse.io" in domain:
+        return GreenhouseAdapter(page, profile, resume_path)
+    if "lever.co" in domain:
+        return LeverAdapter(page, profile, resume_path)
+    return GenericATSAdapter(page, profile, resume_path)
 
 
 async def apply_job_tool(
@@ -150,53 +303,65 @@ async def apply_job_tool(
     job_title: str = "",
     mock_mode: bool = False,
 ) -> str:
+    """MCP tool: Apply to a specific job opening using the original resume PDF."""
     parsed = urlparse(application_url)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         return json.dumps({
             "status": "FAILED",
-            "reason": "Invalid application URL",
-            "resume_used": resume_file_path,
+            "company": company,
+            "job_title": job_title,
+            "application_url": application_url,
+            "reason": "Invalid application URL scheme or hostname",
+            "confirmation": "",
+            "submitted_at": None,
+            "resume_hash": "",
+            "resume_used": str(resume_file_path),
         })
 
     resume_path = Path(resume_file_path)
     if not resume_path.exists():
         return json.dumps({
             "status": "FAILED",
-            "reason": "Original resume file not found",
-            "resume_used": resume_file_path,
+            "company": company,
+            "job_title": job_title,
+            "application_url": application_url,
+            "reason": "Original resume file not found on disk",
+            "confirmation": "",
+            "submitted_at": None,
+            "resume_hash": "",
+            "resume_used": str(resume_file_path),
         })
 
+    resume_hash = compute_file_hash(resume_path)
+
+    # In mock mode (e.g. unit testing or demo simulation), return mock result
     if mock_mode:
         url_lower = application_url.lower()
-        if any(t in url_lower for t in ("login", "captcha", "signup")):
+        if any(t in url_lower for t in ("login", "captcha", "signup", "auth")):
             return json.dumps({
                 "status": "MANUAL_ACTION_REQUIRED",
-                "reason": "Login Required",
+                "company": company,
+                "job_title": job_title,
+                "application_url": application_url,
+                "reason": "Login / Authentication required (mock mode)",
+                "confirmation": "",
+                "submitted_at": None,
+                "resume_hash": resume_hash,
                 "resume_used": str(resume_path.resolve()),
             })
         return json.dumps({
             "status": "SUCCESS",
-            "reason": "Application submitted (mock mode)",
+            "company": company,
+            "job_title": job_title,
+            "application_url": application_url,
+            "reason": "Application submitted (mock mode verification)",
+            "confirmation": "Mock confirmation: Application received",
+            "submitted_at": datetime.now(timezone.utc).isoformat(),
+            "resume_hash": resume_hash,
             "resume_used": str(resume_path.resolve()),
-            "submitted_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
         })
 
-    # If the URL is a search directory or aggregator, route directly to Manual Action
-    if _is_aggregator_url(application_url):
-        logger.info("ℹ️ Aggregator/Directory URL detected for %s: %s", company, application_url)
-        return json.dumps({
-            "status": "MANUAL_ACTION_REQUIRED",
-            "reason": "Job Directory / Search Listing — open URL to view postings",
-            "resume_used": str(resume_path.resolve()),
-            "url": application_url,
-        })
-
-    # --- REAL APPLICATION MODE FOR DIRECT JOB PAGES ---
-    logger.info("🌐 Opening browser for direct application: %s (%s)", company, job_title)
-    logger.info("🔗 URL: %s", application_url)
-
-    import sys
-    import asyncio
+    # --- REAL PRODUCTION PLAYWRIGHT BROWSER AUTOMATION ---
     if sys.platform == "win32":
         try:
             asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
@@ -208,95 +373,127 @@ async def apply_job_tool(
     except ImportError:
         return json.dumps({
             "status": "FAILED",
-            "reason": "Playwright not installed",
-            "resume_used": str(resume_path.resolve()),
+            "company": company,
+            "job_title": job_title,
+            "application_url": application_url,
+            "reason": "Playwright is not installed in the environment",
+            "confirmation": "",
+            "submitted_at": None,
+            "resume_hash": resume_hash,
         })
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(
-            headless=False,
-            slow_mo=300,
+            headless=True,  # Production headless execution
+            slow_mo=200,
         )
         context = await browser.new_context(
             viewport={"width": 1280, "height": 900},
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
+                "Chrome/124.0.0.0 Safari/537.36"
             ),
         )
         page = await context.new_page()
 
         try:
-            logger.info("📄 Navigating to application page...")
-            await page.goto(application_url, timeout=15000, wait_until="domcontentloaded")
-            await page.wait_for_timeout(1500)
+            logger.info("🌐 Navigating to job URL: %s (%s at %s)", application_url, job_title, company)
+            await page.goto(application_url, timeout=25000, wait_until="domcontentloaded")
+            await page.wait_for_timeout(2000)
 
-            manual = await _detect_manual_required(page)
-            if manual:
-                logger.info("🔐 Detected: %s — waiting for user input...", manual)
-                still_blocked = await _wait_for_user_action(page, manual)
-                if still_blocked:
-                    return json.dumps({
-                        "status": "MANUAL_ACTION_REQUIRED",
-                        "reason": f"{manual.replace('_', ' ').title()} required",
-                        "resume_used": str(resume_path.resolve()),
-                        "url": application_url,
-                    })
-
-            await _fill_form_fields(page, user_profile, resume_path)
-
-            submit = await page.query_selector(
-                'button[type="submit"], '
-                'input[type="submit"], '
-                'button:has-text("Apply"), '
-                'button:has-text("Submit"), '
-                'a:has-text("Apply Now"), '
-                'button:has-text("Send Application")'
-            )
-
-            if submit and await submit.is_visible():
-                logger.info("🖱️ Clicking submit button...")
-                await submit.click()
-                await page.wait_for_timeout(3000)
-
-                manual = await _detect_manual_required(page)
-                if manual:
-                    still_blocked = await _wait_for_user_action(page, manual)
-                    if still_blocked:
-                        return json.dumps({
-                            "status": "MANUAL_ACTION_REQUIRED",
-                            "reason": f"{manual.replace('_', ' ').title()} required after submit",
-                            "resume_used": str(resume_path.resolve()),
-                            "url": application_url,
-                        })
-
-                logger.info("✅ Application submitted for %s!", company)
-                await page.wait_for_timeout(2000)
+            # 1. Check for security barrier / login / captcha
+            barrier = await _detect_security_barrier(page)
+            if barrier:
+                logger.info("🔐 Security barrier detected: %s for %s", barrier, company)
                 return json.dumps({
-                    "status": "SUCCESS",
-                    "reason": "Application submitted via browser",
+                    "status": "MANUAL_ACTION_REQUIRED",
+                    "company": company,
+                    "job_title": job_title,
+                    "application_url": application_url,
+                    "reason": f"Security barrier / {barrier.replace('_', ' ').title()} required",
+                    "confirmation": "",
+                    "submitted_at": None,
+                    "resume_hash": resume_hash,
                     "resume_used": str(resume_path.resolve()),
-                    "url": application_url,
-                    "submitted_at": __import__("datetime").datetime.now(
-                        __import__("datetime").timezone.utc
-                    ).isoformat(),
                 })
 
+            # 2. Resolve adapter & fill form
+            adapter = _resolve_adapter(application_url, page, user_profile, resume_path)
+            filled, reason, _ = await adapter.fill_and_submit()
+
+            # 3. Check for security barriers appearing after submit
+            barrier_post = await _detect_security_barrier(page)
+            if barrier_post:
+                return json.dumps({
+                    "status": "MANUAL_ACTION_REQUIRED",
+                    "company": company,
+                    "job_title": job_title,
+                    "application_url": application_url,
+                    "reason": f"Security barrier / {barrier_post.replace('_', ' ').title()} appeared during submission",
+                    "confirmation": "",
+                    "submitted_at": None,
+                    "resume_hash": resume_hash,
+                    "resume_used": str(resume_path.resolve()),
+                })
+
+            # 4. Strictly verify submission success evidence
+            verified, confirmation_detail = await _verify_submission_success(page, application_url)
+
+            if verified:
+                logger.info("✅ Verified submission for %s: %s", company, confirmation_detail)
+                return json.dumps({
+                    "status": "SUCCESS",
+                    "company": company,
+                    "job_title": job_title,
+                    "application_url": application_url,
+                    "reason": "Application submitted and verified",
+                    "confirmation": confirmation_detail,
+                    "submitted_at": datetime.now(timezone.utc).isoformat(),
+                    "resume_hash": resume_hash,
+                    "resume_used": str(resume_path.resolve()),
+                })
+
+            if not filled:
+                logger.info("⚠️ Form filling incomplete for %s: %s", company, reason)
+                return json.dumps({
+                    "status": "MANUAL_ACTION_REQUIRED",
+                    "company": company,
+                    "job_title": job_title,
+                    "application_url": application_url,
+                    "reason": f"Custom application form layout ({reason}) — please apply directly",
+                    "confirmation": "",
+                    "submitted_at": None,
+                    "resume_hash": resume_hash,
+                    "resume_used": str(resume_path.resolve()),
+                })
+
+            # Submit was clicked but success could not be verified
+            logger.warning("❌ Submission could not be verified for %s at %s", company, application_url)
             return json.dumps({
-                "status": "MANUAL_ACTION_REQUIRED",
-                "reason": "Direct form not automatically fillable — please apply manually",
+                "status": "FAILED",
+                "company": company,
+                "job_title": job_title,
+                "application_url": application_url,
+                "reason": "Application submission could not be verified from page response",
+                "confirmation": "",
+                "submitted_at": None,
+                "resume_hash": resume_hash,
                 "resume_used": str(resume_path.resolve()),
-                "url": application_url,
             })
 
         except Exception as exc:
-            logger.info("⚠️ Browser navigation issue for %s: %s", company, exc)
+            logger.error("❌ Exception during browser application for %s: %s", company, exc)
             return json.dumps({
-                "status": "MANUAL_ACTION_REQUIRED",
-                "reason": f"Page load or bot protection check — open URL to view posting",
+                "status": "FAILED",
+                "company": company,
+                "job_title": job_title,
+                "application_url": application_url,
+                "reason": f"Browser navigation error: {exc}",
+                "confirmation": "",
+                "submitted_at": None,
+                "resume_hash": resume_hash,
                 "resume_used": str(resume_path.resolve()),
-                "url": application_url,
             })
         finally:
             await browser.close()

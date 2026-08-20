@@ -1,17 +1,19 @@
-"""MCP client wrapper for LangGraph agents."""
+"""MCP client wrapper for LangGraph agents with LangSmith tracing and error handling."""
 
 import json
+import logging
 from typing import Any
 
 from langsmith import traceable
 
 from app.config import get_settings
 
+logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
 class MCPClient:
-    """Direct tool invocation — calls MCP tool implementations in-process for reliability."""
+    """In-process and protocol-compatible MCP tool invocation client."""
 
     def __init__(self):
         from mcp_server.tools.apply_job import apply_job_tool
@@ -26,12 +28,25 @@ class MCPClient:
 
     @traceable(name="mcp_tool_call")
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Invoke an MCP tool with tracing and structured JSON error handling."""
         if name not in self._tools:
-            raise ValueError(f"Unknown MCP tool: {name}")
-        result = await self._tools[name](**arguments)
-        if isinstance(result, str):
-            return json.loads(result)
-        return result
+            raise ValueError(f"Unknown MCP tool: {name}. Available: {list(self._tools.keys())}")
+
+        try:
+            result = await self._tools[name](**arguments)
+            if isinstance(result, str):
+                try:
+                    return json.loads(result)
+                except json.JSONDecodeError:
+                    return {"raw_output": result}
+            return result
+        except Exception as exc:
+            logger.error("Error executing MCP tool '%s': %s", name, exc)
+            return {
+                "status": "FAILED",
+                "reason": f"MCP tool '{name}' execution error: {exc}",
+                "error": str(exc),
+            }
 
 
 _mcp_client: MCPClient | None = None

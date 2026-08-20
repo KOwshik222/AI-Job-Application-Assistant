@@ -13,7 +13,10 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    llm_provider: str = "gemini"  # "gemini" or "openai"
     openai_api_key: str = ""
+    gemini_api_key: str = ""
+    google_api_key: str = ""  # alias for gemini_api_key
     langchain_tracing_v2: bool = True
     langchain_project: str = "ai-job-application-assistant"
     langchain_api_key: str = ""
@@ -39,10 +42,21 @@ class Settings(BaseSettings):
 
     embedding_model: str = "text-embedding-3-small"
     chat_model: str = "gpt-4o-mini"
+    gemini_chat_model: str = "gemini-2.0-flash"
+    gemini_embedding_model: str = "models/text-embedding-004"
+
+    @property
+    def active_gemini_key(self) -> str:
+        return self.gemini_api_key or self.google_api_key
 
     @property
     def is_demo_mode(self) -> bool:
-        return not self.openai_api_key
+        provider = self.llm_provider.lower()
+        if provider == "gemini":
+            return not bool(self.active_gemini_key)
+        elif provider == "openai":
+            return not bool(self.openai_api_key)
+        return not bool(self.active_gemini_key or self.openai_api_key)
 
     @property
     def resume_dir(self) -> Path:

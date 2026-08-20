@@ -23,7 +23,6 @@ function toast(msg, type = 'success') {
 function show(id) { 
   const el = document.getElementById(id);
   el.classList.remove('hidden');
-  // Re-trigger animation
   el.classList.remove('fade-in');
   void el.offsetWidth;
   el.classList.add('fade-in');
@@ -47,28 +46,32 @@ function statusBadge(status) {
     PENDING_MANUAL: 'badge-warning',
     FAILED: 'badge-danger',
   };
-  return `<span class="badge ${map[status] || ''}">${status}</span>`;
+  const label = status === 'SUCCESS' ? 'VERIFIED SUBMITTED' : status;
+  return `<span class="badge ${map[status] || ''}">${label}</span>`;
 }
 
-// --- Init ---
+// --- Init & Health Status ---
 async function init() {
   try {
     const res = await fetch(`${API}/config`);
     if (!res.ok) throw new Error('API Offline');
     const cfg = await res.json();
     const badge = document.getElementById('modeBadge');
-    if (!cfg.demo_mode) {
-      badge.textContent = 'Live Mode';
-      badge.classList.add('live');
-    } else if (cfg.tavily_configured || cfg.smtp_configured) {
-      badge.textContent = `Live Search + Email`;
-      badge.classList.add('live');
+    
+    if (cfg.demo_mode) {
+      badge.textContent = 'DEMO MODE (Keyword Matcher)';
+      badge.className = 'header-badge demo';
+      badge.title = 'LLM API key not set. Running in demo matching mode.';
     } else {
-      badge.textContent = 'Demo Mode (no API keys)';
-      badge.classList.add('demo');
+      const providerName = (cfg.llm_provider || 'AI').toUpperCase();
+      badge.textContent = `LIVE PRODUCTION (${providerName})`;
+      badge.className = 'header-badge live';
+      badge.title = `Active LLM: ${providerName} · Tavily: ${cfg.tavily_configured ? 'Yes' : 'No'} · SMTP: ${cfg.smtp_configured ? 'Yes' : 'No'}`;
     }
   } catch (err) {
-    document.getElementById('modeBadge').textContent = 'API Offline';
+    const badge = document.getElementById('modeBadge');
+    badge.textContent = 'API Offline';
+    badge.className = 'header-badge demo';
     toast('Cannot connect to backend API', 'error');
   }
 }
@@ -137,7 +140,7 @@ document.getElementById('profileForm').addEventListener('submit', async e => {
 
     hide('stepProfile');
     show('stepSearch');
-    toast(`Resume indexed (${data.chunks_indexed} chunks)`);
+    toast(`Original Resume Indexed & Hash Verified (${data.chunks_indexed} chunks)`);
   } catch (err) {
     toast(err.message, 'error');
   } finally {
@@ -177,7 +180,7 @@ document.getElementById('startSearchBtn').addEventListener('click', async () => 
     }
     const data = await res.json();
     state.runId = data.run_id;
-    document.getElementById('statusText').textContent = 'Supervisor agent routing to job search…';
+    document.getElementById('statusText').textContent = 'Supervisor agent coordinating job discovery…';
     pollStatus();
   } catch (err) {
     toast(err.message, 'error');
@@ -203,9 +206,9 @@ function setPipelineStep(agent) {
 }
 
 const statusMessages = {
-  RUNNING: 'Agents working…',
+  RUNNING: 'AI Agents working…',
   COMPLETED: 'Workflow complete!',
-  FAILED: 'Workflow failed',
+  FAILED: 'Workflow execution stopped',
 };
 
 function pollStatus() {
@@ -219,10 +222,10 @@ function pollStatus() {
 
       if (data.jobs_found > 0) setPipelineStep('resume_match');
       if (data.matched_jobs > 0) setPipelineStep('application');
-      if (data.applied_successfully > 0 || data.manual_action_required > 0) setPipelineStep('notification');
+      if (data.applied_successfully > 0 || data.manual_action_required > 0 || data.failed > 0) setPipelineStep('notification');
 
       document.getElementById('statusText').textContent =
-        `${statusMessages[data.status] || data.status} · ${data.jobs_found} jobs found · ${data.matched_jobs} matched`;
+        `${statusMessages[data.status] || data.status} · ${data.jobs_found} individual jobs found · ${data.matched_jobs} matched threshold`;
 
       if (data.status === 'COMPLETED' || data.status === 'FAILED') {
         clearInterval(state.pollTimer);
@@ -231,7 +234,7 @@ function pollStatus() {
         show('stepResults');
         setLoading('startSearchBtn', 'searchSpinner', false);
         if (data.status === 'FAILED') toast(data.errors?.[0] || 'Workflow failed', 'error');
-        else toast('Workflow completed!');
+        else toast('Workflow successfully completed!');
       }
     } catch { /* retry */ }
   }, 2000);
@@ -248,23 +251,22 @@ async function loadResults(summary) {
   banner.classList.remove('hidden', 'success', 'warning', 'error');
   if (summary.email_sent) {
     banner.classList.add('success');
-    banner.innerHTML = `✅ Email summary sent to your inbox.`;
+    banner.innerHTML = `✅ Full application summary email sent to your inbox.`;
   } else if (summary.email_status === 'NOT_CONFIGURED') {
     banner.classList.add('warning');
     banner.innerHTML = `
-      ⚠️ <strong>Email not sent</strong> — SMTP is not configured.
-      ${summary.email_log_url ? ` <a href="${summary.email_log_url}" target="_blank">View summary in browser</a>` : ''}
-      <br><small>To receive real emails, add SMTP settings to <code>.env</code> (see README).</small>
+      ⚠️ <strong>Email saved locally</strong> — SMTP not configured in .env.
+      ${summary.email_log_url ? ` <a href="${summary.email_log_url}" target="_blank" style="color:#6366f1;text-decoration:underline;">View saved HTML report</a>` : ''}
     `;
   } else if (summary.email_status === 'FAILED') {
     banner.classList.add('error');
     banner.innerHTML = `
-      ❌ <strong>Email failed:</strong> ${summary.email_note || 'Unknown error'}
-      ${summary.email_log_url ? ` · <a href="${summary.email_log_url}" target="_blank">View saved summary</a>` : ''}
+      ❌ <strong>Email dispatch issue:</strong> ${summary.email_note || 'Unknown error'}
+      ${summary.email_log_url ? ` · <a href="${summary.email_log_url}" target="_blank">View saved HTML report</a>` : ''}
     `;
   } else {
     banner.classList.add('warning');
-    banner.innerHTML = summary.email_note || 'Email status unknown.';
+    banner.innerHTML = summary.email_note || 'Summary ready.';
   }
 
   // Applications table
@@ -272,19 +274,20 @@ async function loadResults(summary) {
     const res = await fetch(`${API}/applications?user_id=${state.userId}`);
     const data = await res.json();
     const tbody = document.getElementById('applicationsTable');
-    if (data.applications.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="5" class="empty">No applications yet</td></tr>';
+    if (!data.applications || data.applications.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="6" class="empty">No applications processed in this batch</td></tr>';
     } else {
       tbody.innerHTML = data.applications.map(a => `
         <tr>
-          <td>${a.company}</td>
+          <td><strong>${a.company}</strong></td>
           <td>${a.job_title}</td>
           <td>
             ${statusBadge(a.status)}
-            ${a.error ? `<br><small class="text-danger" style="margin-top:4px;display:inline-block;">${a.error}</small>` : ''}
+            ${a.error ? `<br><small class="text-muted" style="margin-top:4px;display:inline-block;font-size:0.75rem;">${a.error}</small>` : ''}
           </td>
-          <td>${a.match_score ?? '—'}</td>
-          <td>${a.applied_at ? new Date(a.applied_at).toLocaleString() : '—'}</td>
+          <td><span class="badge ${a.match_score >= 75 ? 'badge-success' : 'badge-warning'}">${a.match_score ?? '—'}%</span></td>
+          <td>${a.job_url ? `<a href="${a.job_url}" target="_blank" rel="noopener" class="btn-link" style="font-size:0.8rem;">Open Job ↗</a>` : '—'}</td>
+          <td>${a.applied_at ? new Date(a.applied_at).toLocaleTimeString() : '—'}</td>
         </tr>
       `).join('');
     }
@@ -294,14 +297,14 @@ async function loadResults(summary) {
 
   // Manual actions
   const manualList = document.getElementById('manualList');
-  if (summary.pending_manual_jobs.length === 0) {
+  if (!summary.pending_manual_jobs || summary.pending_manual_jobs.length === 0) {
     manualList.innerHTML = '<p class="empty">No manual actions required</p>';
   } else {
     manualList.innerHTML = summary.pending_manual_jobs.map(j => `
-      <div class="manual-item">
-        <h4>${j.company}</h4>
-        <p>Reason: ${j.reason}</p>
-        <a href="${j.job_url}" target="_blank" rel="noopener">${j.job_url}</a>
+      <div class="manual-item" style="border-left:4px solid #f59e0b;padding:12px;margin-bottom:12px;background:rgba(245,158,11,0.05);border-radius:4px;">
+        <h4 style="margin:0 0 4px 0;">${j.company}</h4>
+        <p style="margin:0 0 8px 0;font-size:0.875rem;color:#d97706;"><strong>Reason:</strong> ${j.reason}</p>
+        <a href="${j.job_url}" target="_blank" rel="noopener" class="btn btn-secondary" style="font-size:0.8rem;padding:4px 10px;text-decoration:none;display:inline-block;">Open & Apply Directly ↗</a>
       </div>
     `).join('');
   }

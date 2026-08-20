@@ -54,19 +54,31 @@ class Repository:
         )
         job = result.scalar_one_or_none()
         if job:
+            listing.job_id = job.job_id
             return job
-        job = Job(
-            title=listing.title,
-            company=listing.company,
-            location=listing.location,
-            description=listing.description,
-            url=listing.application_url,
-            source=listing.source,
-        )
-        self.session.add(job)
-        await self.session.flush()
-        listing.job_id = job.job_id
-        return job
+        try:
+            async with self.session.begin_nested():
+                job = Job(
+                    title=listing.title,
+                    company=listing.company,
+                    location=listing.location,
+                    description=listing.description,
+                    url=listing.application_url,
+                    source=listing.source,
+                )
+                self.session.add(job)
+                await self.session.flush()
+                listing.job_id = job.job_id
+                return job
+        except Exception:
+            result = await self.session.execute(
+                select(Job).where(Job.company == listing.company, Job.url == listing.application_url)
+            )
+            job = result.scalar_one_or_none()
+            if job:
+                listing.job_id = job.job_id
+                return job
+            raise
 
     async def create_application(
         self,
