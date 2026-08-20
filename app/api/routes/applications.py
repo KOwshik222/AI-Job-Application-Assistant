@@ -159,3 +159,30 @@ async def list_browser_sessions():
         ]
     )
 
+
+@router.get("/applications/session-status")
+async def get_session_status(browser_session_id: str = Query(...)):
+    """Get status of an active human-in-the-loop browser session via MCP."""
+    from app.services.mcp_client import get_mcp_client
+
+    mcp = get_mcp_client()
+    result = await mcp.call_tool(
+        "get_application_session_status",
+        {"browser_session_id": browser_session_id},
+    )
+    return result
+
+
+@router.post("/applications/cancel-session")
+async def cancel_session(request: ContinueApplicationRequest):
+    """Cancel and clean up an active browser session via MCP."""
+    from app.services.mcp_client import get_mcp_client
+
+    mcp = get_mcp_client()
+    result = await mcp.call_tool(
+        "cancel_application_session",
+        {"browser_session_id": request.browser_session_id},
+    )
+    return result
+
+

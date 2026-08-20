@@ -9,7 +9,12 @@ from mcp.server.lowlevel import Server
 from mcp.server.stdio import stdio_server
 import mcp.types as types
 
-from mcp_server.tools.apply_job import apply_job_tool, resume_application_tool
+from mcp_server.tools.apply_job import (
+    apply_job_tool,
+    cancel_application_session_tool,
+    get_application_session_status_tool,
+    resume_application_tool,
+)
 from mcp_server.tools.search_jobs import search_jobs_tool
 from mcp_server.tools.send_email import send_email_tool
 
@@ -70,6 +75,28 @@ TOOLS = {
             "required": ["browser_session_id"],
         },
         "description": "Resume a paused job application after user completes manual action (CAPTCHA, login, etc.)",
+    },
+    "get_application_session_status": {
+        "tool": get_application_session_status_tool,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "browser_session_id": {"type": "string"},
+            },
+            "required": ["browser_session_id"],
+        },
+        "description": "Get status of an active human-in-the-loop browser session",
+    },
+    "cancel_application_session": {
+        "tool": cancel_application_session_tool,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "browser_session_id": {"type": "string"},
+            },
+            "required": ["browser_session_id"],
+        },
+        "description": "Cancel and clean up an active browser session",
     },
 }
 

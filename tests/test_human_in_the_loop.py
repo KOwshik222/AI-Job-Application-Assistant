@@ -198,3 +198,92 @@ async def test_resume_application_missing_session():
     data = json.loads(result)
     assert data["status"] == "FAILED"
     assert "not found" in data["reason"].lower() or "not available" in data["reason"].lower()
+
+
+@pytest.mark.asyncio
+async def test_get_session_status_tool():
+    """Get status of active session and nonexistent session."""
+    from app.services.browser_sessions import BrowserSessionManager, get_browser_session_manager
+    from mcp_server.tools.apply_job import get_application_session_status_tool
+
+    manager = get_browser_session_manager()
+    session = manager.create_session(
+        application_url="https://example.com/apply",
+        company="StatusCorp",
+        job_title="Engineer",
+        job_id="job-status-1",
+        barrier_type="CAPTCHA",
+        page=None,
+        browser=None,
+        context=None,
+        user_profile={"email": "status@test.com"},
+        resume_path="/path/to/resume.pdf",
+    )
+
+    # Active session status
+    res = await get_application_session_status_tool(session.session_id)
+    data = json.loads(res)
+    assert data["status"] == "WAITING_FOR_USER"
+    assert data["company"] == "StatusCorp"
+    assert data["barrier_type"] == "CAPTCHA"
+
+    # Nonexistent session
+    res_none = await get_application_session_status_tool("invalid-session-id")
+    data_none = json.loads(res_none)
+    assert data_none["status"] == "NOT_FOUND"
+
+    await manager.cleanup_session(session.session_id)
+
+
+@pytest.mark.asyncio
+async def test_cancel_session_tool():
+    """Cancel active session and clean up resources."""
+    from app.services.browser_sessions import get_browser_session_manager
+    from mcp_server.tools.apply_job import cancel_application_session_tool
+
+    manager = get_browser_session_manager()
+    session = manager.create_session(
+        application_url="https://example.com/apply",
+        company="CancelCorp",
+        job_title="Engineer",
+        job_id="job-cancel-1",
+        barrier_type="LOGIN",
+        page=None,
+        browser=None,
+        context=None,
+        user_profile={"email": "cancel@test.com"},
+        resume_path="/path/to/resume.pdf",
+    )
+
+    res = await cancel_application_session_tool(session.session_id)
+    data = json.loads(res)
+    assert data["status"] == "CANCELLED"
+    assert manager.get_session(session.session_id) is None
+
+
+@pytest.mark.asyncio
+async def test_browser_session_timeout_cleanup():
+    """Expired sessions are cleaned up automatically."""
+    from datetime import datetime, timezone, timedelta
+    from app.services.browser_sessions import BrowserSessionManager, SessionStatus
+
+    manager = BrowserSessionManager()
+    session = manager.create_session(
+        application_url="https://example.com/timeout",
+        company="TimeoutCorp",
+        job_title="Engineer",
+        job_id="job-timeout-1",
+        barrier_type="OTP",
+        page=None,
+        browser=None,
+        context=None,
+        user_profile={},
+        resume_path="",
+    )
+    # Manually backdate created_at to trigger expiration
+    session.created_at = datetime.now(timezone.utc) - timedelta(seconds=1200)
+
+    cleaned = await manager.cleanup_timed_out()
+    assert cleaned >= 1
+    assert manager.get_session(session.session_id) is None
+

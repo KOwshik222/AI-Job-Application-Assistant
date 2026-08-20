@@ -143,6 +143,35 @@ async def test_mcp_send_email_through_protocol():
 
 
 @pytest.mark.asyncio
+async def test_mcp_hitl_tools_through_protocol():
+    """Test get_application_session_status, cancel_application_session, and resume_application through MCP protocol."""
+    from app.services.mcp_client import MCPClient
+
+    client = MCPClient()
+    try:
+        await client.connect()
+        # Status for nonexistent session
+        status_res = await client.call_tool("get_application_session_status", {
+            "browser_session_id": "test-session-123",
+        })
+        assert status_res.get("status") in ("NOT_FOUND", "FAILED")
+
+        # Cancel for nonexistent session
+        cancel_res = await client.call_tool("cancel_application_session", {
+            "browser_session_id": "test-session-123",
+        })
+        assert cancel_res.get("status") in ("NOT_FOUND", "FAILED")
+
+        # Resume for nonexistent session
+        resume_res = await client.call_tool("resume_application", {
+            "browser_session_id": "test-session-123",
+        })
+        assert resume_res.get("status") == "FAILED"
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
 async def test_mcp_unknown_tool_returns_error():
     """Unknown tool should return error through MCP protocol."""
     from app.services.mcp_client import MCPClient

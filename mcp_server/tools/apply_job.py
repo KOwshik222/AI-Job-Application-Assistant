@@ -702,3 +702,67 @@ async def resume_application_tool(
             "reason": f"Error resuming application: {exc}",
             "browser_session_id": browser_session_id,
         })
+
+
+async def get_application_session_status_tool(
+    browser_session_id: str,
+) -> str:
+    """MCP tool: Get status of an active human-in-the-loop browser session."""
+    try:
+        from app.services.browser_sessions import get_browser_session_manager
+    except ImportError:
+        return json.dumps({
+            "status": "FAILED",
+            "reason": "Browser session manager not available",
+            "browser_session_id": browser_session_id,
+        })
+
+    manager = get_browser_session_manager()
+    session = manager.get_session(browser_session_id)
+    if not session:
+        return json.dumps({
+            "status": "NOT_FOUND",
+            "browser_session_id": browser_session_id,
+            "reason": f"Session '{browser_session_id}' not found or expired",
+        })
+
+    return json.dumps({
+        "status": session.status.value,
+        "browser_session_id": session.session_id,
+        "company": session.company,
+        "job_title": session.job_title,
+        "application_url": session.application_url,
+        "barrier_type": session.barrier_type,
+        "created_at": session.created_at.isoformat(),
+    })
+
+
+async def cancel_application_session_tool(
+    browser_session_id: str,
+) -> str:
+    """MCP tool: Cancel and clean up an active browser session."""
+    try:
+        from app.services.browser_sessions import get_browser_session_manager
+    except ImportError:
+        return json.dumps({
+            "status": "FAILED",
+            "reason": "Browser session manager not available",
+            "browser_session_id": browser_session_id,
+        })
+
+    manager = get_browser_session_manager()
+    session = manager.get_session(browser_session_id)
+    if not session:
+        return json.dumps({
+            "status": "NOT_FOUND",
+            "browser_session_id": browser_session_id,
+            "reason": f"Session '{browser_session_id}' not found or already cleaned up",
+        })
+
+    await manager.cleanup_session(browser_session_id)
+    return json.dumps({
+        "status": "CANCELLED",
+        "browser_session_id": browser_session_id,
+        "message": f"Browser session '{browser_session_id}' cancelled and cleaned up",
+    })
+
