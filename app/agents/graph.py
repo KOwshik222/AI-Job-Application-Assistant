@@ -12,6 +12,11 @@ from app.agents.supervisor import route_supervisor, supervisor_node
 from app.db.session import async_session_factory
 
 
+async def _resume_match_with_session(state: AgentState) -> dict:
+    async with async_session_factory() as session:
+        return await resume_match_agent(state, session)
+
+
 async def _application_with_session(state: AgentState) -> dict:
     async with async_session_factory() as session:
         return await application_agent(state, session)
@@ -22,7 +27,7 @@ def build_graph():
 
     graph.add_node("supervisor", supervisor_node)
     graph.add_node("job_search_agent", job_search_agent)
-    graph.add_node("resume_match_agent", resume_match_agent)
+    graph.add_node("resume_match_agent", _resume_match_with_session)
     graph.add_node("application_agent", _application_with_session)
     graph.add_node("notification_agent", notification_agent)
 

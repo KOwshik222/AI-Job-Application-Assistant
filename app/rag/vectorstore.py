@@ -47,3 +47,18 @@ def get_resume_text(resume_id: str) -> str:
         return "\n".join(docs)
     except Exception:
         return ""
+
+
+def get_resume_chunks_count(resume_id: str) -> int:
+    try:
+        vectorstore = Chroma(
+            collection_name=f"resume_{resume_id}",
+            embedding_function=get_embeddings(),
+            persist_directory=str(settings.data_dir / "chroma"),
+        )
+        data = vectorstore.get()
+        docs = data.get("documents") or []
+        return len(docs)
+    except Exception:
+        return 0
+

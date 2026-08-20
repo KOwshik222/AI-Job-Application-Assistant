@@ -1,5 +1,6 @@
 """Job Search Agent — finds real individual openings via MCP search_jobs."""
 
+import logging
 from langsmith import traceable
 
 from app.agents.state import AgentState
@@ -7,6 +8,7 @@ from app.config import get_settings
 from app.services.mcp_client import get_mcp_client
 from app.schemas import JobListing, UserProfile
 
+logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
@@ -32,6 +34,11 @@ async def job_search_agent(state: AgentState) -> dict:
     status = result.get("status", "")
     message = result.get("message") or result.get("error") or ""
 
+    # Clear live logging for data-flow tracing (no secrets/PII)
+    logger.info("SEARCH RESULTS: %d jobs", len(jobs))
+    for idx, j in enumerate(jobs[:3], 1):
+        logger.info("  Job %d: '%s' at '%s' (%s)", idx, j.get("title"), j.get("company"), j.get("application_url"))
+
     errors: list[str] = []
     if not jobs:
         if status == "LIVE_JOB_SEARCH_UNAVAILABLE":
@@ -48,4 +55,3 @@ async def job_search_agent(state: AgentState) -> dict:
         "next_agent": "resume_match" if jobs else "notification",
         "errors": errors,
     }
-

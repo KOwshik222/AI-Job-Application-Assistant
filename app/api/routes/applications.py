@@ -20,6 +20,10 @@ from app.schemas import (
 )
 from app.services.workflow_runner import get_latest_run_for_user, get_run_status
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/v1", tags=["applications"])
 settings = get_settings()
 
@@ -95,14 +99,29 @@ async def application_summary(
     summary = state.get("email_summary") or {}
     log_path = settings.data_dir / "email_logs" / f"{rid}.html"
 
+    applied_count = summary.get("applied_successfully", len(state.get("applied_jobs", [])))
+    manual_count = summary.get("manual_action_required", len(state.get("pending_manual_jobs", [])))
+    failed_count = summary.get("failed", len(state.get("failed_jobs", [])))
+    jobs_found_count = len(state.get("jobs_found", []))
+    matched_count = len(state.get("matched_jobs", []))
+
+    # [7] / [8] Log summary metrics without exposing secrets or PII
+    logger.info(
+        "RUN ID: %s | SEARCHED: %d | MATCHED: %d | APPLIED: %d | MANUAL: %d | FAILED: %d",
+        rid,
+        jobs_found_count,
+        matched_count,
+        applied_count,
+        manual_count,
+        failed_count,
+    )
+
     return ApplicationSummaryResponse(
         run_id=rid,
         status=data.get("status", "UNKNOWN"),
-        applied_successfully=summary.get("applied_successfully", len(state.get("applied_jobs", []))),
-        manual_action_required=summary.get(
-            "manual_action_required", len(state.get("pending_manual_jobs", []))
-        ),
-        failed=summary.get("failed", len(state.get("failed_jobs", []))),
+        applied_successfully=applied_count,
+        manual_action_required=manual_count,
+        failed=failed_count,
         pending_manual_jobs=[
             ManualActionItem(**p) for p in state.get("pending_manual_jobs", [])
         ],
@@ -110,8 +129,8 @@ async def application_summary(
         email_status=state.get("email_status", "UNKNOWN"),
         email_note=state.get("email_note", ""),
         email_log_url=f"/api/v1/email-log/{rid}" if log_path.exists() else None,
-        jobs_found=len(state.get("jobs_found", [])),
-        matched_jobs=len(state.get("matched_jobs", [])),
+        jobs_found=jobs_found_count,
+        matched_jobs=matched_count,
         errors=[
             e for e in (
                 state.get("errors", []) if state else []

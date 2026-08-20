@@ -224,7 +224,9 @@ class Repository:
         )
         if status:
             query = query.where(Application.status == status)
-        result = await self.session.execute(query.order_by(Application.applied_at.desc()))
+        result = await self.session.execute(
+            query.order_by(Application.applied_at.desc().nullslast(), Application.application_id.desc())
+        )
         rows = result.all()
         total = len(rows)
         return rows[offset : offset + limit], total
