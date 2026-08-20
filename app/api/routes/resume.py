@@ -46,8 +46,16 @@ async def upload_resume(
     resume = await repo.create_resume(user.user_id, file_path, file_hash)
     resume_id = resume.resume_id
 
-    chunks = load_and_chunk_resume(file_path)
-    index_resume_chunks(resume_id, chunks)
+    try:
+        chunks = load_and_chunk_resume(file_path)
+        index_resume_chunks(resume_id, chunks)
+    except Exception as exc:
+        await repo.commit()  # keep saved resume record
+        raise HTTPException(
+            status_code=503,
+            detail=f"RAG Indexing Error: {exc}. Please verify your LLM/Embeddings configuration in .env.",
+        )
+
     await repo.commit()
 
     return UploadResumeResponse(
@@ -57,3 +65,4 @@ async def upload_resume(
         message="Resume stored unchanged. RAG indexing complete.",
         chunks_indexed=len(chunks),
     )
+

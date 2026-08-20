@@ -9,14 +9,15 @@ from pathlib import Path
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import applications, config, email, resume, workflow
 from app.db.session import init_db
-from app.services.mcp_client import get_mcp_client, shutdown_mcp_client
+from app.rag.llm_provider import LLMProviderError
+from app.services.mcp_client import MCPConnectionError, MCPToolError, get_mcp_client, shutdown_mcp_client
 
 logger = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
@@ -60,6 +61,33 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(LLMProviderError)
+async def llm_provider_exception_handler(request: Request, exc: LLMProviderError):
+    logger.error("LLMProviderError on %s: %s", request.url.path, exc)
+    return JSONResponse(
+        status_code=exc.status_code or 503,
+        content={
+            "detail": f"{exc.reason}. (Provider: {exc.provider}). Please configure a valid key or enable DEMO_MODE=true in .env.",
+            "status": "LLM_PROVIDER_ERROR",
+            "provider": exc.provider,
+            "reason": exc.reason,
+        },
+    )
+
+
+@app.exception_handler(MCPConnectionError)
+async def mcp_connection_exception_handler(request: Request, exc: MCPConnectionError):
+    logger.error("MCPConnectionError on %s: %s", request.url.path, exc)
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": f"MCP tool server unavailable: {exc}",
+            "status": "MCP_UNAVAILABLE",
+        },
+    )
+
 
 app.include_router(resume.router)
 app.include_router(workflow.router)

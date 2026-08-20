@@ -44,8 +44,8 @@ class Settings(BaseSettings):
 
     embedding_model: str = "text-embedding-3-small"
     chat_model: str = "gpt-4o-mini"
-    gemini_chat_model: str = "gemini-2.0-flash"
-    gemini_embedding_model: str = "models/text-embedding-004"
+    gemini_chat_model: str = "gemini-3.6-flash"
+    gemini_embedding_model: str = "models/gemini-embedding-001"
     test_mode: bool = False
 
     # Explicit demo mode — NEVER auto-derived from missing API keys
