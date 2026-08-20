@@ -1,11 +1,15 @@
-"""MCP tool: search_jobs — find and validate individual job openings."""
+"""MCP tool: search_jobs — fetches, inspects, validates, and extracts individual job postings."""
 
+import hashlib
 import json
 import logging
 import re
 import uuid
 from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+
+import httpx
+from bs4 import BeautifulSoup
 
 from app.config import get_settings
 
@@ -14,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 MOCK_JOBS = [
     {
+        "job_id": "mock-job-001",
         "title": "Senior Java Developer",
         "company": "Infosys",
         "location": "Pune",
@@ -23,6 +28,7 @@ MOCK_JOBS = [
         "posted_at": "2026-08-15",
     },
     {
+        "job_id": "mock-job-002",
         "title": "Java Backend Engineer",
         "company": "Tata Consultancy Services",
         "location": "Mumbai",
@@ -32,6 +38,7 @@ MOCK_JOBS = [
         "posted_at": "2026-08-14",
     },
     {
+        "job_id": "mock-job-003",
         "title": "Full Stack Java Developer",
         "company": "Wipro",
         "location": "Bangalore",
@@ -41,6 +48,7 @@ MOCK_JOBS = [
         "posted_at": "2026-08-13",
     },
     {
+        "job_id": "mock-job-004",
         "title": "Java Microservices Developer",
         "company": "Accenture",
         "location": "Pune",
@@ -50,6 +58,7 @@ MOCK_JOBS = [
         "posted_at": "2026-08-12",
     },
     {
+        "job_id": "mock-job-005",
         "title": "Java Cloud Architect",
         "company": "Tech Mahindra",
         "location": "Mumbai",
@@ -60,7 +69,7 @@ MOCK_JOBS = [
     },
 ]
 
-# Domains to immediately reject (non-job content)
+# Non-job domains to reject immediately
 EXCLUDED_DOMAINS = (
     "youtube.com",
     "youtu.be",
@@ -82,7 +91,7 @@ EXCLUDED_DOMAINS = (
     "hackerrank.com",
 )
 
-# Reject titles containing non-job keywords
+# Reject titles containing non-job / article keywords
 EXCLUDED_TITLE_KEYWORDS = (
     "questions",
     "interview",
@@ -101,12 +110,11 @@ EXCLUDED_TITLE_KEYWORDS = (
     "top careers",
     "best careers",
     "what is",
-    "vs",
     "cheat sheet",
 )
 
-# Aggregator search URL patterns that represent lists of jobs rather than single jobs
-AGGREGATOR_SEARCH_PATTERNS = (
+# Patterns that indicate search / category aggregator pages (not single jobs)
+AGGREGATOR_URL_PATTERNS = (
     r"/jobs/search",
     r"/jobs\?q=",
     r"/q-",
@@ -119,7 +127,7 @@ AGGREGATOR_SEARCH_PATTERNS = (
     r"/search\?",
 )
 
-# Generic company name patterns that indicate fake or aggregator extractions
+# Patterns indicating fake or aggregator company names
 GENERIC_COMPANY_PATTERNS = (
     r"^\d+\+?\s*",
     r"jobs?",
@@ -140,20 +148,21 @@ GENERIC_COMPANY_PATTERNS = (
     r"linkedin",
     r"hirist",
     r"monster",
+    r"foundit",
 )
 
 
 def canonicalize_url(raw_url: str) -> str:
-    """Strip query tracking parameters and fragment to canonicalize URL."""
+    """Strip tracking parameters and fragments to produce a clean canonical URL."""
     try:
         parsed = urlparse(raw_url.strip())
         if not parsed.scheme or not parsed.netloc:
             return ""
 
-        # Filter out tracking query params
         tracking_params = {
             "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
             "ref", "gh_src", "source", "refId", "trackingId", "position", "pageNum",
+            "f", "from", "trk", "tracking",
         }
         query_dict = parse_qs(parsed.query)
         cleaned_query = {k: v for k, v in query_dict.items() if k not in tracking_params}
@@ -165,24 +174,23 @@ def canonicalize_url(raw_url: str) -> str:
             parsed.path.rstrip("/"),
             parsed.params,
             encoded_query,
-            "",  # strip fragment
+            "",
         ))
     except Exception:
         return raw_url.strip()
 
 
-def is_individual_job_url(url: str) -> bool:
-    """Check whether a URL represents an individual job posting vs aggregator/search page."""
+def is_candidate_url_structure(url: str) -> bool:
+    """Preliminary URL structure check to eliminate obvious search aggregator pages."""
     parsed = urlparse(url.lower())
     netloc = parsed.netloc
     path = parsed.path
     query = parsed.query
 
-    # Reject non-job domains
     if any(dom in netloc for dom in EXCLUDED_DOMAINS):
         return False
 
-    # Check for known ATS individual job patterns
+    # Check for known ATS individual job URL patterns
     ats_individual_patterns = [
         r"boards\.greenhouse\.io/[^/]+/jobs/\d+",
         r"jobs\.lever\.co/[^/]+/[a-f0-9-]+",
@@ -201,8 +209,8 @@ def is_individual_job_url(url: str) -> bool:
         if re.search(pattern, f"{netloc}{path}"):
             return True
 
-    # Reject search result/category pages
-    for pattern in AGGREGATOR_SEARCH_PATTERNS:
+    # Reject known search/category aggregator paths
+    for pattern in AGGREGATOR_URL_PATTERNS:
         if re.search(pattern, path) or re.search(pattern, f"?{query}"):
             return False
 
@@ -213,78 +221,185 @@ def is_individual_job_url(url: str) -> bool:
     return True
 
 
-def extract_real_company_and_title(raw_title: str, default_role: str, url: str) -> tuple[str | None, str | None]:
-    """Extract and validate real company name and job title from page title / metadata.
-    
-    Returns (company, job_title) if valid, or (None, None) if page is invalid/generic.
-    """
-    title_str = raw_title.strip()
-    if not title_str:
-        return None, None
+def _clean_html_text(html_fragment: str) -> str:
+    """Clean HTML tags and normalize whitespace."""
+    soup = BeautifulSoup(html_fragment, "html.parser")
+    # Remove script and style elements
+    for script in soup(["script", "style", "nav", "footer", "header"]):
+        script.extract()
+    text = soup.get_text(separator=" ")
+    return re.sub(r"\s+", " ", text).strip()
 
-    # Check for excluded keywords in title
-    if any(k in title_str.lower() for k in EXCLUDED_TITLE_KEYWORDS):
-        return None, None
 
-    # Common separator split: "Job Title - Company - Location" or "Company - Job Title"
-    parts = [p.strip() for p in re.split(r"[-|–—:]", title_str) if p.strip()]
+def _extract_from_json_ld(soup: BeautifulSoup, url: str) -> dict | None:
+    """Extract JobPosting schema from JSON-LD scripts if present."""
+    scripts = soup.find_all("script", type="application/ld+json")
+    for s in scripts:
+        if not s.string:
+            continue
+        try:
+            data = json.loads(s.string)
+            items = data if isinstance(data, list) else [data]
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                item_type = item.get("@type", "")
+                if item_type == "JobPosting" or "JobPosting" in item_type:
+                    title = item.get("title", "").strip()
+                    org = item.get("hiringOrganization", {})
+                    company = org.get("name", "").strip() if isinstance(org, dict) else str(org).strip()
 
-    company = None
-    job_title = None
+                    # Extract location
+                    loc_val = "Remote" if item.get("jobLocationType") == "TELECOMMUTE" else ""
+                    job_loc = item.get("jobLocation", {})
+                    if isinstance(job_loc, dict):
+                        addr = job_loc.get("address", {})
+                        if isinstance(addr, dict):
+                            loc_parts = [
+                                addr.get("addressLocality"),
+                                addr.get("addressRegion"),
+                                addr.get("addressCountry"),
+                            ]
+                            loc_val = ", ".join([p for p in loc_parts if p]) or loc_val
+                        elif isinstance(addr, str):
+                            loc_val = addr
 
-    # Pattern 1: "Company is hiring Job Title" or "Company hiring Job Title"
-    hiring_match = re.search(r"^(.*?)\s+(?:is\s+)?hiring\s+(.*?)(?:\s+in\s+.*|\s*[-|–].*)?$", title_str, re.IGNORECASE)
-    if hiring_match:
-        company = hiring_match.group(1).strip()
-        job_title = hiring_match.group(2).strip()
+                    desc = _clean_html_text(item.get("description", ""))
+                    posted_at = item.get("datePosted", "")
+                    job_id = str(item.get("identifier", {}).get("value") or "")
 
-    # Pattern 2: "Job Title at Company"
-    if not company:
-        at_match = re.search(r"^(.*?)\s+at\s+(.*?)(?:\s+in\s+.*|\s*[-|–].*)?$", title_str, re.IGNORECASE)
-        if at_match:
-            job_title = at_match.group(1).strip()
-            company = at_match.group(2).strip()
+                    if title and company and desc:
+                        return {
+                            "title": title,
+                            "company": company,
+                            "location": loc_val or "Not Specified",
+                            "description": desc,
+                            "posted_at": posted_at,
+                            "job_id": job_id,
+                        }
+        except Exception:
+            continue
+    return None
 
-    # Pattern 3: Separator parts
-    if not company and len(parts) >= 2:
-        # Check if first part matches role keywords
-        first_part_matches_role = any(w.lower() in parts[0].lower() for w in default_role.split() if len(w) > 2)
-        if first_part_matches_role:
-            job_title = parts[0]
-            company = parts[1]
-        else:
-            company = parts[0]
-            job_title = parts[1]
-    elif not company and len(parts) == 1:
-        job_title = parts[0]
-        # Attempt to infer company from ATS URL domain (e.g. boards.greenhouse.io/stripe/jobs -> Stripe)
-        url_match = re.search(r"(?:greenhouse\.io|lever\.co|ashbyhq\.com|smartrecruiters\.com|workable\.com)/([^/]+)", url)
-        if url_match:
-            company = url_match.group(1).replace("-", " ").title()
 
-    if not company or not job_title:
-        return None, None
+async def fetch_and_inspect_job_page(
+    url: str,
+    raw_title: str,
+    default_role: str,
+) -> dict | None:
+    """Fetch the actual web page, inspect its content, and extract verified single-job data."""
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
 
-    # Clean company and title strings
-    company = re.sub(r"\s+", " ", company).strip()
-    job_title = re.sub(r"\s+", " ", job_title).strip()
+    try:
+        async with httpx.AsyncClient(timeout=12.0, follow_redirects=True, verify=False) as client:
+            resp = await client.get(url, headers=headers)
+            if resp.status_code >= 400:
+                logger.debug("Page fetch returned status %d for %s", resp.status_code, url)
+                return None
+            html_content = resp.text
+    except Exception as exc:
+        logger.debug("Could not fetch page for %s: %s", url, exc)
+        return None
 
-    # Reject if company matches generic aggregator phrases
-    for pattern in GENERIC_COMPANY_PATTERNS:
-        if re.search(pattern, company, re.IGNORECASE):
-            return None, None
+    soup = BeautifulSoup(html_content, "html.parser")
+    page_text = _clean_html_text(html_content).lower()
 
-    # Reject if title matches aggregator phrases
-    if re.search(r"\d+\+?\s*jobs?", job_title, re.IGNORECASE):
-        return None, None
+    # 1. Multi-job aggregator detection in page content
+    aggregator_content_signals = [
+        r"\bshowing \d+[-–]\d+ of \d+ jobs\b",
+        r"\b\d+[\+,\d]* jobs found\b",
+        r"\bsearch results for\b",
+        r"\bbrowse jobs by category\b",
+        r"\btop \d+ careers\b",
+        r"\binterview questions and answers\b",
+    ]
+    for pattern in aggregator_content_signals:
+        if re.search(pattern, page_text):
+            logger.debug("Page rejected as multi-job aggregator for %s: pattern '%s'", url, pattern)
+            return None
 
-    # Length sanity check
-    if len(company) < 2 or len(company) > 80:
-        return None, None
-    if len(job_title) < 3 or len(job_title) > 120:
-        return None, None
+    # 2. Check JSON-LD structured data first
+    json_ld_data = _extract_from_json_ld(soup, url)
+    if json_ld_data and len(json_ld_data["description"]) > 50:
+        company = json_ld_data["company"]
+        title = json_ld_data["title"]
 
-    return company, job_title
+        # Validate company is not fake/generic
+        if not any(re.search(pat, company, re.IGNORECASE) for pat in GENERIC_COMPANY_PATTERNS):
+            job_id = json_ld_data.get("job_id") or hashlib.sha256(url.encode()).hexdigest()[:16]
+            return {
+                "job_id": job_id,
+                "title": title,
+                "company": company,
+                "location": json_ld_data["location"],
+                "description": json_ld_data["description"][:3000],
+                "application_url": url,
+                "source": "tavily_verified",
+                "posted_at": json_ld_data.get("posted_at") or datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+            }
+
+    # 3. HTML Element Extraction fallback
+    # Check H1 / Title
+    h1 = soup.find("h1")
+    title_text = h1.get_text().strip() if h1 else raw_title
+
+    # Exclude non-job title keywords
+    if any(k in title_text.lower() for k in EXCLUDED_TITLE_KEYWORDS):
+        return None
+
+    # Extract company from OpenGraph site_name or title
+    og_site = soup.find("meta", property="og:site_name")
+    company_name = og_site.get("content", "").strip() if og_site else ""
+
+    if not company_name:
+        # ATS domain pattern (e.g. boards.greenhouse.io/stripe/jobs/123 -> Stripe)
+        ats_match = re.search(r"(?:greenhouse\.io|lever\.co|ashbyhq\.com|smartrecruiters\.com|workable\.com)/([^/]+)", url)
+        if ats_match:
+            company_name = ats_match.group(1).replace("-", " ").title()
+
+    if not company_name:
+        # Title parsing: "Role at Company" or "Company - Role"
+        parts = [p.strip() for p in re.split(r"[-|–—:]", title_text) if p.strip()]
+        if len(parts) >= 2:
+            company_name = parts[0] if len(parts[0]) < len(parts[1]) else parts[1]
+
+    # Validate company name
+    if not company_name or any(re.search(pat, company_name, re.IGNORECASE) for pat in GENERIC_COMPANY_PATTERNS):
+        return None
+
+    # Extract location from common location selectors
+    location = "Not Specified"
+    loc_el = soup.find(class_=re.compile(r"location|job-location|workplace", re.IGNORECASE))
+    if loc_el:
+        loc_text = loc_el.get_text().strip()
+        if len(loc_text) < 60:
+            location = loc_text
+
+    # Extract description from main content area
+    desc_el = soup.find(class_=re.compile(r"job-description|description|content|posting-requirements", re.IGNORECASE))
+    desc_text = _clean_html_text(str(desc_el)) if desc_el else page_text[:2000]
+
+    if len(desc_text) < 80:
+        return None
+
+    job_id = hashlib.sha256(url.encode()).hexdigest()[:16]
+    return {
+        "job_id": job_id,
+        "title": title_text[:100],
+        "company": company_name[:80],
+        "location": location,
+        "description": desc_text[:3000],
+        "application_url": url,
+        "source": "tavily_verified",
+        "posted_at": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+    }
 
 
 async def _search_tavily(
@@ -294,99 +409,70 @@ async def _search_tavily(
     experience_years: int,
     max_results: int,
 ) -> list[dict]:
-    """Execute targeted Tavily search for individual job postings and extract structured data."""
+    """Search Tavily for candidate URLs, fetch/inspect the actual web pages, and return verified jobs."""
     if not settings.tavily_api_key:
         return []
 
     try:
         from langchain_community.tools.tavily_search import TavilySearchResults
 
-        loc_str = " OR ".join(locations) if locations else "India"
-        skills_str = " ".join(skills[:3]) if skills else ""
+        loc_str = " OR ".join(locations) if locations else ""
+        skills_str = " ".join(skills[:2]) if skills else ""
 
-        # Targeted queries specifically finding individual job postings across ATS & portals
         queries = [
             f'"{role}" ({loc_str}) ("boards.greenhouse.io" OR "jobs.lever.co" OR "myworkdayjobs.com" OR "jobs.smartrecruiters.com" OR "jobs.ashbyhq.com")',
-            f'"{role}" {skills_str} ({loc_str}) ("apply" OR "job description") ("requirements" OR "responsibilities")',
-            f'"{role}" ({loc_str}) ("careers" OR "job opening") site:linkedin.com/jobs/view OR site:indeed.com/viewjob',
+            f'"{role}" {skills_str} ("apply" OR "job description" OR "responsibilities") {loc_str}',
         ]
 
-        jobs: list[dict] = []
-        seen_canonical_urls: set[str] = set()
-        seen_job_signatures: set[tuple[str, str, str]] = set()
+        candidate_urls: list[tuple[str, str]] = []
+        seen_candidate_urls: set[str] = set()
 
         tool = TavilySearchResults(
-            max_results=max(8, max_results // len(queries) + 3),
+            max_results=max(10, max_results + 5),
             tavily_api_key=settings.tavily_api_key,
         )
 
         for query in queries:
-            if len(jobs) >= max_results:
-                break
-
             try:
                 results = tool.invoke({"query": query})
+                if isinstance(results, list):
+                    for r in results:
+                        u = r.get("url", "").strip()
+                        t = r.get("title", "").strip()
+                        if u and u not in seen_candidate_urls:
+                            canon = canonicalize_url(u)
+                            if canon and is_candidate_url_structure(canon):
+                                candidate_urls.append((canon, t))
+                                seen_candidate_urls.add(canon)
             except Exception as e:
-                logger.warning("Tavily query failed for '%s': %s", query, e)
+                logger.warning("Tavily query '%s' failed: %s", query, e)
+
+        # Inspect candidate pages
+        verified_jobs: list[dict] = []
+        seen_signatures: set[tuple[str, str]] = set()
+
+        for url, raw_title in candidate_urls:
+            if len(verified_jobs) >= max_results:
+                break
+
+            job_data = await fetch_and_inspect_job_page(url, raw_title, role)
+            if not job_data:
                 continue
 
-            if not isinstance(results, list):
+            # Strict deduplication by (normalized company, normalized title)
+            norm_comp = re.sub(r"[^\w]", "", job_data["company"].lower())
+            norm_title = re.sub(r"[^\w]", "", job_data["title"].lower())
+            sig = (norm_comp, norm_title)
+
+            if sig in seen_signatures:
                 continue
+            seen_signatures.add(sig)
 
-            for r in results:
-                raw_url = r.get("url", "").strip()
-                raw_title = r.get("title", "").strip()
-                content = r.get("content", "").strip()
+            verified_jobs.append(job_data)
 
-                if not raw_url or not raw_title:
-                    continue
-
-                canonical_url = canonicalize_url(raw_url)
-                if not canonical_url or canonical_url in seen_canonical_urls:
-                    continue
-
-                # Validate individual job posting URL
-                if not is_individual_job_url(canonical_url):
-                    continue
-
-                # Extract and validate real company and title
-                company, job_title = extract_real_company_and_title(raw_title, role, canonical_url)
-                if not company or not job_title:
-                    continue
-
-                # Description must be meaningful (> 30 characters)
-                if len(content) < 30:
-                    continue
-
-                # Deduplicate by (company, normalized_title, location)
-                norm_company = re.sub(r"[^\w]", "", company.lower())
-                norm_title = re.sub(r"[^\w]", "", job_title.lower())
-                norm_loc = locations[0].lower() if locations else ""
-                sig = (norm_company, norm_title, norm_loc)
-
-                if sig in seen_job_signatures:
-                    continue
-
-                seen_canonical_urls.add(canonical_url)
-                seen_job_signatures.add(sig)
-
-                jobs.append({
-                    "job_id": str(uuid.uuid4()),
-                    "title": job_title,
-                    "company": company,
-                    "location": locations[0] if locations else "Remote",
-                    "description": content,
-                    "application_url": canonical_url,
-                    "source": "tavily",
-                    "posted_at": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-                })
-
-                if len(jobs) >= max_results:
-                    break
-
-        return jobs
+        return verified_jobs
     except Exception as exc:
-        logger.error("Error in Tavily job search: %s", exc)
+        logger.error("Error in Tavily job discovery pipeline: %s", exc)
         return []
 
 
@@ -396,10 +482,40 @@ async def search_jobs_tool(
     locations: list[str] | None = None,
     experience_years: int = 0,
     max_results: int = 30,
+    test_mode: bool | None = None,
 ) -> str:
-    """MCP tool implementation to search, validate, and return real individual job listings."""
+    """MCP tool implementation to search, inspect actual pages, validate, and return real individual job listings."""
     locations = locations or []
     skills = skills or []
+
+    # Determine test mode
+    is_test = settings.test_mode if test_mode is None else test_mode
+
+    # If test mode is explicitly enabled, return deterministic mock jobs
+    if is_test:
+        logger.info("TEST_MODE active — returning mock jobs for test harness.")
+        mock_subset = []
+        for mock in MOCK_JOBS:
+            loc_match = not locations or any(
+                loc.lower() in mock["location"].lower() for loc in locations
+            )
+            if loc_match:
+                mock_subset.append(mock)
+        return json.dumps({
+            "jobs": mock_subset[:max_results],
+            "total_found": len(mock_subset[:max_results]),
+            "status": "TEST_MOCK_DATA",
+        })
+
+    # Live Production Job Discovery
+    if not settings.tavily_api_key:
+        logger.warning("Tavily API key is not configured — live job search is unavailable.")
+        return json.dumps({
+            "jobs": [],
+            "total_found": 0,
+            "status": "LIVE_JOB_SEARCH_UNAVAILABLE",
+            "message": "Tavily API key not configured in .env. Live job search is unavailable.",
+        })
 
     jobs = await _search_tavily(
         role=role,
@@ -409,20 +525,8 @@ async def search_jobs_tool(
         max_results=max_results,
     )
 
-    # Fallback to mock jobs only when live search is unconfigured or returned no valid individual jobs in demo
-    if not jobs and not settings.tavily_api_key:
-        logger.info("Tavily API key not configured — returning mock sample jobs for development/demo.")
-        jobs = []
-        for mock in MOCK_JOBS:
-            loc_match = not locations or any(
-                loc.lower() in mock["location"].lower() for loc in locations
-            )
-            if loc_match:
-                jobs.append({**mock, "job_id": str(uuid.uuid4())})
-        jobs = jobs[:max_results]
-
     return json.dumps({
         "jobs": jobs,
         "total_found": len(jobs),
-        "source": "tavily" if settings.tavily_api_key else "mock",
+        "status": "SUCCESS" if jobs else "NO_MATCHING_JOBS_FOUND",
     })

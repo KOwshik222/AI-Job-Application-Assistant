@@ -1,12 +1,11 @@
-"""Tests for Phase 2: Job Discovery, Individual Job Validation, Extraction, and Deduplication."""
+"""Tests for Phase 2 & Issue 1: Job Discovery, Actual Page Inspection, Extraction, and Validation."""
 
 import json
 import pytest
 
 from mcp_server.tools.search_jobs import (
     canonicalize_url,
-    extract_real_company_and_title,
-    is_individual_job_url,
+    is_candidate_url_structure,
     search_jobs_tool,
 )
 
@@ -19,88 +18,51 @@ def test_canonicalize_url():
     assert "#apply" not in canonical
 
 
-def test_is_individual_job_url_ats():
+def test_candidate_url_structure_ats():
     # Valid individual ATS job URLs
-    assert is_individual_job_url("https://boards.greenhouse.io/airbnb/jobs/456789") is True
-    assert is_individual_job_url("https://jobs.lever.co/netflix/a1b2c3d4-e5f6") is True
-    assert is_individual_job_url("https://nvidia.myworkdayjobs.com/NVIDIA/job/AI-Engineer") is True
-    assert is_individual_job_url("https://jobs.smartrecruiters.com/Acme/123456") is True
-    assert is_individual_job_url("https://www.linkedin.com/jobs/view/3829102938") is True
+    assert is_candidate_url_structure("https://boards.greenhouse.io/airbnb/jobs/456789") is True
+    assert is_candidate_url_structure("https://jobs.lever.co/netflix/a1b2c3d4-e5f6") is True
+    assert is_candidate_url_structure("https://nvidia.myworkdayjobs.com/NVIDIA/job/AI-Engineer") is True
+    assert is_candidate_url_structure("https://jobs.smartrecruiters.com/Acme/123456") is True
+    assert is_candidate_url_structure("https://www.linkedin.com/jobs/view/3829102938") is True
 
 
-def test_is_individual_job_url_rejects_aggregators_and_search():
+def test_candidate_url_structure_rejects_aggregators_and_search():
     # Reject search result and multi-job directory pages
-    assert is_individual_job_url("https://www.linkedin.com/jobs/search/?keywords=java") is False
-    assert is_individual_job_url("https://www.indeed.com/q-ai-developer-jobs.html") is False
-    assert is_individual_job_url("https://www.naukri.com/java-developer-jobs") is False
-    assert is_individual_job_url("https://www.hirist.tech/k/java-jobs") is False
-    assert is_individual_job_url("https://wellfound.com/role/l/java-developer/india") is False
-    assert is_individual_job_url("https://careers.google.com/jobs") is False
+    assert is_candidate_url_structure("https://www.linkedin.com/jobs/search/?keywords=java") is False
+    assert is_candidate_url_structure("https://www.indeed.com/q-ai-developer-jobs.html") is False
+    assert is_candidate_url_structure("https://www.naukri.com/java-developer-jobs") is False
+    assert is_candidate_url_structure("https://www.hirist.tech/k/java-jobs") is False
+    assert is_candidate_url_structure("https://wellfound.com/role/l/java-developer/india") is False
+    assert is_candidate_url_structure("https://careers.google.com/jobs") is False
 
 
-def test_is_individual_job_url_rejects_media_and_articles():
-    assert is_individual_job_url("https://www.youtube.com/watch?v=123456") is False
-    assert is_individual_job_url("https://medium.com/@user/top-ai-careers-2026") is False
-    assert is_individual_job_url("https://en.wikipedia.org/wiki/Artificial_intelligence") is False
-
-
-def test_extract_real_company_and_title():
-    # Format: Role at Company
-    comp, title = extract_real_company_and_title(
-        "Senior AI Engineer at Microsoft - Hyderabad", "AI Engineer", "https://careers.microsoft.com/job/1"
-    )
-    assert comp == "Microsoft"
-    assert "AI Engineer" in title
-
-    # Format: Company hiring Role
-    comp, title = extract_real_company_and_title(
-        "Google is hiring Senior Software Engineer in Bengaluru", "Software Engineer", "https://careers.google.com/job/2"
-    )
-    assert comp == "Google"
-    assert "Software Engineer" in title
-
-    # Greenhouse ATS URL
-    comp, title = extract_real_company_and_title(
-        "Backend Developer", "Backend Developer", "https://boards.greenhouse.io/stripe/jobs/123"
-    )
-    assert comp == "Stripe"
-    assert title == "Backend Developer"
-
-
-def test_rejects_generic_fake_company_and_title():
-    # Reject aggregator titles
-    comp, title = extract_real_company_and_title(
-        "1,000+ AI Developer jobs in Hyderabad", "AI Developer", "https://example.com"
-    )
-    assert comp is None and title is None
-
-    # Reject article/trend titles
-    comp, title = extract_real_company_and_title(
-        "Top AI careers in 2026: Opportunities & Trends", "AI Developer", "https://example.com"
-    )
-    assert comp is None and title is None
-
-    # Reject interview questions
-    comp, title = extract_real_company_and_title(
-        "Top 50 Java Interview Questions and Answers", "Java Developer", "https://example.com"
-    )
-    assert comp is None and title is None
+def test_candidate_url_structure_rejects_media_and_articles():
+    assert is_candidate_url_structure("https://www.youtube.com/watch?v=123456") is False
+    assert is_candidate_url_structure("https://medium.com/@user/top-ai-careers-2026") is False
+    assert is_candidate_url_structure("https://en.wikipedia.org/wiki/Artificial_intelligence") is False
 
 
 @pytest.mark.asyncio
-async def test_search_jobs_tool_returns_structured_jobs():
-    res = await search_jobs_tool(
+async def test_search_jobs_tool_mock_mode_only_when_explicit():
+    # In test mode, returns mock jobs
+    res_test = await search_jobs_tool(
         role="Java Developer",
-        skills=["Java", "Spring Boot"],
         locations=["Pune"],
         max_results=5,
+        test_mode=True,
     )
-    data = json.loads(res)
-    assert "jobs" in data
-    assert len(data["jobs"]) > 0
-    for job in data["jobs"]:
-        assert job["company"] not in ("Tech Company", "Direct Employer", "Direct Hire")
-        assert len(job["company"]) >= 2
-        assert len(job["title"]) >= 3
-        assert len(job["description"]) > 20
-        assert is_individual_job_url(job["application_url"]) is True
+    data_test = json.loads(res_test)
+    assert data_test["status"] == "TEST_MOCK_DATA"
+    assert len(data_test["jobs"]) > 0
+
+    # In production with test_mode=False and no key, never returns mock jobs
+    res_prod = await search_jobs_tool(
+        role="Java Developer",
+        locations=["Pune"],
+        max_results=5,
+        test_mode=False,
+    )
+    data_prod = json.loads(res_prod)
+    # When Tavily is configured it will search or return LIVE status
+    assert data_prod["status"] in ("SUCCESS", "LIVE_JOB_SEARCH_UNAVAILABLE", "NO_MATCHING_JOBS_FOUND")

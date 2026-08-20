@@ -1,4 +1,4 @@
-"""Resume Match Agent — RAG + LLM scoring."""
+"""Resume Match Agent — RAG + LLM structured scoring."""
 
 from langsmith import traceable
 
@@ -18,11 +18,14 @@ async def resume_match_agent(state: AgentState) -> dict:
 
     matched: list[dict] = []
     errors: list[str] = []
+
     for job_data in state.get("jobs_found", []):
         job = JobListing(**job_data)
         try:
             result = match_job_to_resume(job, resume_id, profile)
-            if result.match_score >= threshold:
+            if "MATCHING_FAILED" in result.match_rationale:
+                errors.append(f"{job.company} ({job.title}): {result.match_rationale}")
+            elif result.match_score >= threshold:
                 matched.append(result.model_dump())
         except Exception as exc:
             errors.append(f"Match failed for {job.company}: {exc}")

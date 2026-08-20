@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     chat_model: str = "gpt-4o-mini"
     gemini_chat_model: str = "gemini-2.0-flash"
     gemini_embedding_model: str = "models/text-embedding-004"
+    test_mode: bool = False
 
     @property
     def active_gemini_key(self) -> str:

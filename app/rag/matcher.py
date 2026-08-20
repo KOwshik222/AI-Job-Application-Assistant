@@ -1,4 +1,4 @@
-"""LLM-based resume-job matching via RAG (supporting Gemini and OpenAI)."""
+"""LLM-based resume-job matching via RAG with strict production error handling."""
 
 import logging
 from langchain_core.prompts import ChatPromptTemplate
@@ -22,7 +22,7 @@ class MatchResult(BaseModel):
     match_score: int = Field(ge=0, le=100, description="Match score from 0 to 100")
     matching_skills: list[str] = Field(default_factory=list, description="Skills present in resume that match job requirements")
     missing_skills: list[str] = Field(default_factory=list, description="Skills required by job that are missing in resume")
-    match_rationale: str = Field(description="Detailed explanation of the match evaluation based strictly on resume evidence")
+    match_rationale: str = Field(description="Detailed evaluation based strictly on resume evidence")
 
 
 MATCH_PROMPT = ChatPromptTemplate.from_messages([
@@ -32,7 +32,7 @@ MATCH_PROMPT = ChatPromptTemplate.from_messages([
         "Your task is to evaluate how accurately a candidate's resume fits a specific job description.\n\n"
         "STRICT EVALUATION RULES:\n"
         "1. Base your evaluation ONLY on the provided resume excerpts and declared profile information.\n"
-        "2. Score independently between 0 and 100 based on skill overlap, relevant experience, tools, and responsibilities.\n"
+        "2. Score independently between 0 and 100 based on technical skill overlap, relevant experience, tools, and responsibilities.\n"
         "3. High match (75-100): Candidate meets core technical stack and experience level.\n"
         "4. Moderate match (50-74): Candidate has partial skill overlap or adjacent technologies.\n"
         "5. Low match (0-49): Significant skill or domain mismatch.\n"
@@ -59,8 +59,13 @@ def match_job_to_resume(
     resume_id: str,
     user_profile: UserProfile,
 ) -> MatchedJob:
-    """Evaluate match score and rationale between job description and resume."""
+    """Evaluate match score and rationale between job description and resume.
+    
+    In production mode: Uses configured LLM. If LLM fails, returns MATCHING_FAILED (never silently falls back).
+    In demo mode: Clearly identified demo matcher.
+    """
     if is_demo_mode():
+        logger.info("DEMO MODE: Evaluating match via demo keyword matcher.")
         resume_text = get_resume_text(resume_id)
         return keyword_match_job(job, user_profile, resume_text)
 
@@ -99,8 +104,19 @@ def match_job_to_resume(
             match_rationale=result.match_rationale,
         )
     except Exception as exc:
-        logger.warning("LLM matching failed for %s (%s): %s. Falling back to keyword matcher.", job.company, job.title, exc)
-        resume_text = get_resume_text(resume_id)
-        matched = keyword_match_job(job, user_profile, resume_text)
-        matched.match_rationale += f" [LLM fallback: {exc}]"
-        return matched
+        # In production mode: NEVER silently fall back to keyword matching!
+        logger.error("LLM matching failed in PRODUCTION mode for %s (%s): %s", job.company, job.title, exc)
+        return MatchedJob(
+            job_id=job.job_id,
+            title=job.title,
+            company=job.company,
+            location=job.location,
+            description=job.description,
+            application_url=job.application_url,
+            source=job.source,
+            posted_at=job.posted_at,
+            match_score=0,
+            matching_skills=[],
+            missing_skills=[],
+            match_rationale=f"MATCHING_FAILED: LLM evaluation error ({exc}). Candidate will not be submitted.",
+        )

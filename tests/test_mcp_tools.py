@@ -14,6 +14,7 @@ async def test_search_jobs_mock():
         locations=["Pune", "Mumbai"],
         experience_years=3,
         max_results=10,
+        test_mode=True,
     )
     data = json.loads(result)
     assert "jobs" in data
@@ -34,6 +35,7 @@ async def test_search_jobs_location_filter():
         role="Java Developer",
         locations=["Pune"],
         max_results=5,
+        test_mode=True,
     )
     data = json.loads(result)
     for job in data["jobs"]:
