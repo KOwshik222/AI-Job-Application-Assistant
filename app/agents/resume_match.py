@@ -22,11 +22,15 @@ async def resume_match_agent(state: AgentState, session: AsyncSession | None = N
     resume_id = state["resume_id"]
 
     jobs_found = state.get("jobs_found", [])
-    logger.info("MATCH INPUT JOB COUNT: %d", len(jobs_found))
 
     # [3] RAG Resume Chunks
     chunk_count = get_resume_chunks_count(resume_id)
-    logger.info("RESUME CHUNKS: %d", chunk_count)
+
+    # --- DIAGNOSTIC: RESUME MATCH START ---
+    logger.info("-" * 60)
+    logger.info("RESUME MATCH START | jobs_found=%d | resume_chunks=%d | threshold=%d",
+                len(jobs_found), chunk_count, threshold)
+    logger.info("-" * 60)
 
     matched: list[dict] = []
     not_matched: list[dict] = []
@@ -36,19 +40,17 @@ async def resume_match_agent(state: AgentState, session: AsyncSession | None = N
 
     for job_data in jobs_found:
         job = JobListing(**job_data)
-        logger.info("RAG MATCH START: %s / %s", job.company, job.title)
+        logger.info("  MATCH EVAL | company='%s' | title='%s'", job.company, job.title)
         try:
             result = match_job_to_resume(job, resume_id, profile)
-            logger.info("RAG MATCH END: score=%d", result.match_score)
-            logger.info("MATCH SCORE: %d", result.match_score)
-            logger.info("MATCH THRESHOLD: %d", threshold)
 
             if "MATCHING_FAILED" in result.match_rationale:
-                logger.info("MATCH RESULT: ERROR")
+                logger.info("  MATCH RESULT | company='%s' | title='%s' | score=%d | threshold=%d | result=ERROR",
+                            job.company, job.title, result.match_score, threshold)
                 errors.append(f"{job.company} ({job.title}): {result.match_rationale}")
             elif result.match_score >= threshold:
-                logger.info("APPLICATION ELIGIBILITY: %s / %s (score=%d >= %d) -> ELIGIBLE_FOR_APPLICATION", job.company, job.title, result.match_score, threshold)
-                logger.info("MATCH RESULT: PASS (ELIGIBLE)")
+                logger.info("  MATCH RESULT | company='%s' | title='%s' | score=%d | threshold=%d | result=PASS",
+                            job.company, job.title, result.match_score, threshold)
                 matched.append(result.model_dump())
 
                 if repo:
@@ -62,7 +64,8 @@ async def resume_match_agent(state: AgentState, session: AsyncSession | None = N
                         run_id=state["run_id"],
                     )
             else:
-                logger.info("MATCH RESULT: REJECT (NOT_MATCHED, score=%d < %d)", result.match_score, threshold)
+                logger.info("  MATCH RESULT | company='%s' | title='%s' | score=%d | threshold=%d | result=REJECT",
+                            job.company, job.title, result.match_score, threshold)
                 not_matched.append(result.model_dump())
 
                 if repo:
@@ -82,13 +85,11 @@ async def resume_match_agent(state: AgentState, session: AsyncSession | None = N
     if repo:
         await repo.commit()
 
-    logger.info(
-        "MATCH SUMMARY: %d eligible (>= %d), %d not matched (< %d)",
-        len(matched),
-        threshold,
-        len(not_matched),
-        threshold,
-    )
+    # --- DIAGNOSTIC: MATCH SUMMARY ---
+    logger.info("-" * 60)
+    logger.info("MATCH SUMMARY | eligible=%d | rejected=%d | errors=%d | threshold=%d",
+                len(matched), len(not_matched), len(errors), threshold)
+    logger.info("-" * 60)
 
     return {
         "matched_jobs": matched,

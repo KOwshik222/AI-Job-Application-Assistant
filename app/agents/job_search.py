@@ -15,7 +15,16 @@ settings = get_settings()
 @traceable(name="job_search_agent")
 async def job_search_agent(state: AgentState) -> dict:
     profile = UserProfile(**state["user_profile"])
+
+    # --- DIAGNOSTIC: JOB SEARCH START ---
+    logger.info("-" * 60)
+    logger.info("JOB SEARCH START | role='%s' | experience=%s | locations=%s",
+                profile.role, profile.experience, profile.locations)
+
     mcp = get_mcp_client()
+
+    # --- DIAGNOSTIC: MCP search_jobs START ---
+    logger.info("MCP search_jobs START | test_mode=%s", settings.test_mode or settings.is_demo_mode)
 
     result = await mcp.call_tool(
         "search_jobs",
@@ -29,7 +38,15 @@ async def job_search_agent(state: AgentState) -> dict:
         },
     )
 
-    raw_jobs = result.get("jobs") or result.get("partial_jobs") or []
+    # --- DIAGNOSTIC: MCP search_jobs RESULT ---
+    mcp_status = result.get("status", "UNKNOWN")
+    mcp_jobs = result.get("jobs") or []
+    mcp_partial = result.get("partial_jobs") or []
+    mcp_error = result.get("error") or result.get("message") or ""
+    logger.info("MCP search_jobs RESULT | status=%s | jobs=%d | partial_jobs=%d | error/message='%s'",
+                mcp_status, len(mcp_jobs), len(mcp_partial), mcp_error)
+
+    raw_jobs = mcp_jobs or mcp_partial or []
     jobs = [JobListing(**j).model_dump() for j in raw_jobs]
     status = result.get("status", "")
     message = result.get("message") or result.get("error") or ""
@@ -50,8 +67,16 @@ async def job_search_agent(state: AgentState) -> dict:
         else:
             errors.append(f"No matching individual job postings found for '{profile.role}'.")
 
+    next_agent = "resume_match" if jobs else "notification"
+
+    # --- DIAGNOSTIC: JOB SEARCH END ---
+    logger.info("JOB SEARCH END | jobs_found=%d | next_agent='%s' | errors=%s",
+                len(jobs), next_agent, errors or "none")
+    logger.info("-" * 60)
+
     return {
         "jobs_found": jobs,
-        "next_agent": "resume_match" if jobs else "notification",
+        "next_agent": next_agent,
         "errors": errors,
     }
+

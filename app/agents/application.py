@@ -39,6 +39,12 @@ async def application_agent(state: AgentState, session: AsyncSession) -> dict:
 
     seen_urls: set[str] = set()
 
+    # --- DIAGNOSTIC: APPLICATION AGENT START ---
+    logger.info("-" * 60)
+    logger.info("APPLICATION AGENT START | matched_jobs=%d | max_applications=%d",
+                len(state.get("matched_jobs", [])), max_apps)
+    logger.info("-" * 60)
+
     for idx, job_data in enumerate(state.get("matched_jobs", [])):
         job = MatchedJob(**job_data)
 
@@ -229,6 +235,12 @@ async def application_agent(state: AgentState, session: AsyncSession) -> dict:
             )
 
     await repo.commit()
+
+    # --- DIAGNOSTIC: APPLICATION RESULT ---
+    logger.info("-" * 60)
+    logger.info("APPLICATION RESULT | success=%d | manual=%d | failed=%d",
+                len(applied), len(pending), len(failed))
+    logger.info("-" * 60)
 
     return {
         "applied_jobs": applied,

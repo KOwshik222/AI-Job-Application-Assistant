@@ -1,6 +1,8 @@
 """LangGraph workflow execution."""
 
+import logging
 import os
+import traceback
 import uuid
 from typing import Any
 
@@ -10,6 +12,7 @@ from app.agents.graph import get_graph
 from app.config import get_settings
 from app.schemas import StartJobSearchRequest, UserProfile
 
+logger = logging.getLogger(__name__)
 settings = get_settings()
 
 # In-memory run status (production: Redis or DB)
@@ -77,6 +80,13 @@ async def run_workflow(
 
     _run_status[run_id] = {"status": "RUNNING", "state": None}
 
+    # --- DIAGNOSTIC: WORKFLOW START ---
+    logger.info("=" * 72)
+    logger.info("WORKFLOW START | run_id=%s", run_id)
+    logger.info("  role=%s | experience=%s | locations=%s",
+                profile.role, profile.experience, profile.locations)
+    logger.info("=" * 72)
+
     config = {"configurable": {"thread_id": run_id}}
 
     try:
@@ -85,11 +95,33 @@ async def run_workflow(
             "status": "COMPLETED",
             "state": final_state,
         }
+
+        # --- DIAGNOSTIC: WORKFLOW COMPLETE ---
+        logger.info("=" * 72)
+        logger.info("WORKFLOW COMPLETE | run_id=%s", run_id)
+        logger.info("  jobs_found=%d | matched_jobs=%d | applied_jobs=%d",
+                     len(final_state.get("jobs_found", [])),
+                     len(final_state.get("matched_jobs", [])),
+                     len(final_state.get("applied_jobs", [])))
+        logger.info("  pending_manual_jobs=%d | failed_jobs=%d | errors=%d",
+                     len(final_state.get("pending_manual_jobs", [])),
+                     len(final_state.get("failed_jobs", [])),
+                     len(final_state.get("errors", [])))
+        logger.info("=" * 72)
+
     except Exception as exc:
         _run_status[run_id] = {
             "status": "FAILED",
             "error": str(exc),
         }
+
+        # --- DIAGNOSTIC: WORKFLOW EXCEPTION ---
+        logger.error("=" * 72)
+        logger.error("WORKFLOW EXCEPTION | run_id=%s", run_id)
+        logger.error("  exception=%s: %s", type(exc).__name__, exc)
+        logger.error("  traceback:\n%s", traceback.format_exc())
+        logger.error("=" * 72)
+
         raise
 
     return run_id
@@ -105,3 +137,4 @@ def get_latest_run_for_user(user_id: str) -> dict[str, Any] | None:
         if state.get("user_id") == user_id:
             return {"run_id": run_id, **data}
     return None
+
