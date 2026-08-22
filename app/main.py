@@ -67,7 +67,7 @@ app.add_middleware(
 async def llm_provider_exception_handler(request: Request, exc: LLMProviderError):
     logger.error("LLMProviderError on %s: %s", request.url.path, exc)
     return JSONResponse(
-        status_code=exc.status_code or 503,
+        status_code=getattr(exc, "status_code", 503),
         content={
             "detail": f"{exc.reason}. (Provider: {exc.provider}). Please configure a valid key or enable DEMO_MODE=true in .env.",
             "status": "LLM_PROVIDER_ERROR",

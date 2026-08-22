@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agents.state import AgentState
 from app.config import get_settings
 from app.db.repository import Repository
-from app.rag.matcher import match_job_to_resume
+from app.rag.matcher import is_quota_exhausted, match_job_to_resume, reset_quota_flag
 from app.rag.vectorstore import get_resume_chunks_count
 from app.schemas import JobListing, ManualActionItem, MatchedJob, UserProfile
 
@@ -26,6 +26,10 @@ async def resume_match_agent(state: AgentState, session: AsyncSession | None = N
     # [3] RAG Resume Chunks
     chunk_count = get_resume_chunks_count(resume_id)
 
+    # Reset quota flag at the start of each matching run so stale flags
+    # from a previous workflow don't block a new one.
+    reset_quota_flag()
+
     # --- DIAGNOSTIC: RESUME MATCH START ---
     logger.info("-" * 60)
     logger.info("RESUME MATCH START | jobs_found=%d | resume_chunks=%d | threshold=%d",
@@ -35,16 +39,32 @@ async def resume_match_agent(state: AgentState, session: AsyncSession | None = N
     matched: list[dict] = []
     not_matched: list[dict] = []
     errors: list[str] = []
+    quota_skipped: int = 0
 
     repo = Repository(session) if session else None
 
     for job_data in jobs_found:
         job = JobListing(**job_data)
+
+        # If Gemini quota was already exhausted, skip remaining jobs
+        # instead of making doomed API calls.
+        if is_quota_exhausted():
+            quota_skipped += 1
+            logger.info("  MATCH SKIPPED (quota) | company='%s' | title='%s'",
+                        job.company, job.title)
+            continue
+
         logger.info("  MATCH EVAL | company='%s' | title='%s'", job.company, job.title)
         try:
             result = match_job_to_resume(job, resume_id, profile)
 
-            if "MATCHING_FAILED" in result.match_rationale:
+            if "LLM_QUOTA_EXCEEDED" in result.match_rationale:
+                logger.warning("  MATCH RESULT | company='%s' | title='%s' | result=QUOTA_EXCEEDED",
+                               job.company, job.title)
+                errors.append(f"{job.company} ({job.title}): {result.match_rationale}")
+                # Don't count as matched or not_matched — these are unprocessed
+                continue
+            elif "MATCHING_FAILED" in result.match_rationale:
                 logger.info("  MATCH RESULT | company='%s' | title='%s' | score=%d | threshold=%d | result=ERROR",
                             job.company, job.title, result.match_score, threshold)
                 errors.append(f"{job.company} ({job.title}): {result.match_rationale}")
@@ -87,9 +107,19 @@ async def resume_match_agent(state: AgentState, session: AsyncSession | None = N
 
     # --- DIAGNOSTIC: MATCH SUMMARY ---
     logger.info("-" * 60)
-    logger.info("MATCH SUMMARY | eligible=%d | rejected=%d | errors=%d | threshold=%d",
-                len(matched), len(not_matched), len(errors), threshold)
+    logger.info("MATCH SUMMARY | eligible=%d | rejected=%d | errors=%d | quota_skipped=%d | threshold=%d",
+                len(matched), len(not_matched), len(errors), quota_skipped, threshold)
+    if quota_skipped > 0:
+        logger.warning("MATCH SUMMARY | %d jobs could not be evaluated due to LLM quota exhaustion", quota_skipped)
     logger.info("-" * 60)
+
+    # Add a summary error if quota was exhausted
+    if quota_skipped > 0 or is_quota_exhausted():
+        errors.append(
+            f"LLM_QUOTA_EXCEEDED: Gemini API quota exhausted. "
+            f"{quota_skipped} job(s) could not be evaluated. "
+            f"Resume matching when quota is available."
+        )
 
     return {
         "matched_jobs": matched,

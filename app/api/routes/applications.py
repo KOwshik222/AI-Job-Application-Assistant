@@ -105,15 +105,23 @@ async def application_summary(
     jobs_found_count = len(state.get("jobs_found", []))
     matched_count = len(state.get("matched_jobs", []))
 
+    # Compute additional report metrics from workflow errors
+    errors_list = state.get("errors", []) if state else []
+    not_matched_count = jobs_found_count - matched_count if jobs_found_count > matched_count else 0
+    llm_quota_count = sum(1 for e in errors_list if "LLM_QUOTA_EXCEEDED" in str(e))
+    # Queued = eligible jobs that exceeded max_applications_per_run
+    queued_count = max(0, matched_count - applied_count - manual_count - failed_count)
+
     # [7] / [8] Log summary metrics without exposing secrets or PII
     logger.info(
-        "RUN ID: %s | SEARCHED: %d | MATCHED: %d | APPLIED: %d | MANUAL: %d | FAILED: %d",
+        "RUN ID: %s | SEARCHED: %d | MATCHED: %d | APPLIED: %d | MANUAL: %d | FAILED: %d | QUEUED: %d",
         rid,
         jobs_found_count,
         matched_count,
         applied_count,
         manual_count,
         failed_count,
+        queued_count,
     )
 
     return ApplicationSummaryResponse(
@@ -131,10 +139,11 @@ async def application_summary(
         email_log_url=f"/api/v1/email-log/{rid}" if log_path.exists() else None,
         jobs_found=jobs_found_count,
         matched_jobs=matched_count,
+        not_matched=not_matched_count,
+        queued=queued_count,
+        llm_quota_unprocessed=llm_quota_count,
         errors=[
-            e for e in (
-                state.get("errors", []) if state else []
-            )
+            e for e in errors_list
             if e
         ] or ([data["error"]] if data.get("error") else []),
     )

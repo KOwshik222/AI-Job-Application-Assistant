@@ -1,3 +1,8 @@
+/**
+ * AI Job Application Assistant — Modern Frontend Orchestrator
+ * High-performance state management, real-time polling, and glassmorphism UI updates.
+ */
+
 const API = '/api/v1';
 
 const state = {
@@ -6,18 +11,48 @@ const state = {
   runId: null,
   fileHash: null,
   pollTimer: null,
+  currentStep: 1,
 };
 
-// --- Utils ---
+// --- Stepper Navigation Manager ---
+function setStep(stepNum) {
+  state.currentStep = stepNum;
+  for (let i = 1; i <= 4; i++) {
+    const indicator = document.getElementById(`indicatorStep${i}`);
+    const line = document.getElementById(`line${i - 1}`);
+    
+    if (indicator) {
+      indicator.classList.remove('active', 'done');
+      if (i < stepNum) {
+        indicator.classList.add('done');
+      } else if (i === stepNum) {
+        indicator.classList.add('active');
+      }
+    }
+    
+    if (line) {
+      line.classList.remove('active', 'done');
+      if (i <= stepNum) {
+        line.classList.add(i < stepNum ? 'done' : 'active');
+      }
+    }
+  }
+}
+
+// --- Notifications ---
 function toast(msg, type = 'success') {
+  const container = document.getElementById('toastContainer');
+  if (!container) return;
+  
   const el = document.createElement('div');
   el.className = `toast ${type}`;
   el.textContent = msg;
-  document.getElementById('toastContainer').appendChild(el);
+  container.appendChild(el);
+  
   setTimeout(() => {
     el.classList.add('hide');
-    setTimeout(() => el.remove(), 300);
-  }, 4000);
+    setTimeout(() => el.remove(), 320);
+  }, 4200);
 }
 
 function show(id) { 
@@ -28,6 +63,7 @@ function show(id) {
   void el.offsetWidth;
   el.classList.add('fade-in');
 }
+
 function hide(id) { 
   const el = document.getElementById(id);
   if (el) el.classList.add('hidden'); 
@@ -60,7 +96,8 @@ function statusBadge(status) {
   else if (status === 'QUEUED') label = 'QUEUED';
   else if (status === 'MANUAL_ACTION_REQUIRED' || status === 'PENDING_MANUAL') label = 'MANUAL ACTION';
   else if (status === 'NOT_MATCHED') label = 'NOT MATCHED';
-  return `<span class="badge ${map[status] || ''}">${label}</span>`;
+  
+  return `<span class="badge ${map[status] || 'badge-secondary'}">${label}</span>`;
 }
 
 /**
@@ -80,7 +117,6 @@ async function extractErrorMessage(res, defaultMsg) {
       if (json.message) return json.message;
       if (json.reason) return json.reason;
     } catch {
-      // not JSON — check if plain text
       if (!text.trim().startsWith('<') && text.length < 250) {
         return text.trim();
       }
@@ -89,8 +125,9 @@ async function extractErrorMessage(res, defaultMsg) {
   return defaultMsg;
 }
 
-// --- Init & Health Status ---
+// --- Init & System Health Status ---
 async function init() {
+  setStep(1);
   try {
     const res = await fetch(`${API}/config`);
     if (!res.ok) throw new Error('API Offline');
@@ -105,38 +142,59 @@ async function init() {
       const providerName = (cfg.llm_provider || 'AI').toUpperCase();
       badge.textContent = `LIVE PRODUCTION (${providerName})`;
       badge.className = 'header-badge live';
-      badge.title = `Active LLM: ${providerName} · Tavily: ${cfg.tavily_configured ? 'Yes' : 'No'} · SMTP: ${cfg.smtp_configured ? 'Yes' : 'No'}`;
+      badge.title = `Active LLM: ${providerName} · Tavily: ${cfg.tavily_configured ? 'Configured' : 'Missing'} · SMTP: ${cfg.smtp_configured ? 'Configured' : 'Local Log'}`;
     }
   } catch (err) {
     const badge = document.getElementById('modeBadge');
     if (badge) {
-      badge.textContent = 'API Offline';
+      badge.textContent = 'API OFFLINE';
       badge.className = 'header-badge demo';
     }
     toast('Cannot connect to backend API', 'error');
   }
 }
 
-// --- File handling ---
+// --- File Handling & Drag Drop ---
 const fileInput = document.getElementById('resumeFile');
 const fileDrop = document.getElementById('fileDrop');
 
 if (fileInput) {
   fileInput.addEventListener('change', () => {
     const f = fileInput.files[0];
-    document.getElementById('fileName').textContent = f ? f.name : 'No file selected';
+    const chip = document.getElementById('fileName');
+    if (chip) {
+      chip.innerHTML = f 
+        ? `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path></svg> <span>${f.name}</span>`
+        : '<span>No file selected</span>';
+    }
   });
 }
 
 if (fileDrop) {
-  fileDrop.addEventListener('dragover', e => { e.preventDefault(); fileDrop.classList.add('dragover'); });
-  fileDrop.addEventListener('dragleave', () => fileDrop.classList.remove('dragover'));
+  ['dragenter', 'dragover'].forEach(eventName => {
+    fileDrop.addEventListener(eventName, e => {
+      e.preventDefault();
+      e.stopPropagation();
+      fileDrop.classList.add('dragover');
+    });
+  });
+
+  ['dragleave', 'drop'].forEach(eventName => {
+    fileDrop.addEventListener(eventName, e => {
+      e.preventDefault();
+      e.stopPropagation();
+      fileDrop.classList.remove('dragover');
+    });
+  });
+
   fileDrop.addEventListener('drop', e => {
-    e.preventDefault();
-    fileDrop.classList.remove('dragover');
     if (e.dataTransfer.files.length) {
       fileInput.files = e.dataTransfer.files;
-      document.getElementById('fileName').textContent = e.dataTransfer.files[0].name;
+      const f = e.dataTransfer.files[0];
+      const chip = document.getElementById('fileName');
+      if (chip) {
+        chip.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path></svg> <span>${f.name}</span>`;
+      }
     }
   });
 }
@@ -152,7 +210,11 @@ if (useSampleBtn) {
       const dt = new DataTransfer();
       dt.items.add(file);
       fileInput.files = dt.files;
-      document.getElementById('fileName').textContent = 'sample_resume.pdf';
+      
+      const chip = document.getElementById('fileName');
+      if (chip) {
+        chip.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path></svg> <span>sample_resume.pdf</span>`;
+      }
       toast('Sample resume loaded');
     } catch {
       toast('Sample resume not found', 'error');
@@ -160,7 +222,7 @@ if (useSampleBtn) {
   });
 }
 
-// --- Upload ---
+// --- Upload Resume ---
 const profileForm = document.getElementById('profileForm');
 if (profileForm) {
   profileForm.addEventListener('submit', async e => {
@@ -184,9 +246,24 @@ if (profileForm) {
       state.resumeId = data.resume_id;
       state.fileHash = data.file_hash;
 
-      document.getElementById('resumeInfo').innerHTML =
-        `Resume uploaded: <strong>${file.name}</strong> · ${data.chunks_indexed} chunks indexed · Hash: <code>${(data.file_hash || '').slice(0, 12)}…</code>`;
+      const resumeInfoEl = document.getElementById('resumeInfo');
+      if (resumeInfoEl) {
+        resumeInfoEl.innerHTML = `
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem;">
+            <div>
+              <span style="font-weight:700; color:#ffffff;">📄 ${file.name}</span>
+              <span style="color:#94a3b8; font-size:0.85rem; margin-left:0.5rem;">(${data.chunks_indexed} vector chunks indexed)</span>
+            </div>
+            <span class="field-badge secure">Verified SHA-256</span>
+          </div>
+          <div style="margin-top:0.4rem;">
+            <span style="font-size:0.78rem; color:#64748b;">ORIGINAL HASH:</span>
+            <code>${data.file_hash || ''}</code>
+          </div>
+        `;
+      }
 
+      setStep(2);
       hide('stepProfile');
       show('stepSearch');
       toast(`Original Resume Indexed & Hash Verified (${data.chunks_indexed} chunks)`);
@@ -198,11 +275,12 @@ if (profileForm) {
   });
 }
 
-// --- Start workflow ---
+// --- Start Workflow ---
 const startSearchBtn = document.getElementById('startSearchBtn');
 if (startSearchBtn) {
   startSearchBtn.addEventListener('click', async () => {
     setLoading('startSearchBtn', 'searchSpinner', true);
+    setStep(3);
     hide('stepSearch');
     show('stepProgress');
     setPipelineStep('job_search');
@@ -231,10 +309,13 @@ if (startSearchBtn) {
       }
       const data = await res.json();
       state.runId = data.run_id;
-      document.getElementById('statusText').textContent = 'Supervisor agent coordinating job discovery…';
+      
+      const statusEl = document.getElementById('statusText');
+      if (statusEl) statusEl.textContent = 'Supervisor Agent coordinating targeted ATS discovery…';
       pollStatus();
     } catch (err) {
       toast(err.message, 'error');
+      setStep(2);
       show('stepSearch');
       hide('stepProgress');
       setLoading('startSearchBtn', 'searchSpinner', false);
@@ -242,26 +323,28 @@ if (startSearchBtn) {
   });
 }
 
-// --- Poll workflow status ---
+// --- Poll Workflow Status ---
 function setPipelineStep(agent) {
   const steps = ['job_search', 'resume_match', 'application', 'notification'];
   const idx = steps.indexOf(agent);
-  document.querySelectorAll('.pipeline-step').forEach(el => {
+  
+  document.querySelectorAll('.pipeline-node').forEach(el => {
     const a = el.dataset.agent;
     const i = steps.indexOf(a);
     el.classList.remove('active', 'done');
     if (i < idx) el.classList.add('done');
     if (i === idx) el.classList.add('active');
   });
-  const pct = ((idx + 1) / steps.length) * 100;
-  const progressFill = document.getElementById('progressFill');
-  if (progressFill) progressFill.style.width = `${pct}%`;
+  
+  const pct = Math.min(100, Math.max(15, ((idx + 1) / steps.length) * 100));
+  const trackFill = document.getElementById('trackFill');
+  if (trackFill) trackFill.style.width = `${pct}%`;
 }
 
 const statusMessages = {
-  RUNNING: 'AI Agents working…',
-  COMPLETED: 'Workflow complete!',
-  FAILED: 'Workflow execution stopped',
+  RUNNING: 'Autonomous AI Agents Active',
+  COMPLETED: 'Workflow Completed Successfully',
+  FAILED: 'Workflow Execution Stopped',
 };
 
 function pollStatus() {
@@ -279,13 +362,13 @@ function pollStatus() {
 
       const statusEl = document.getElementById('statusText');
       if (statusEl) {
-        statusEl.textContent =
-          `${statusMessages[data.status] || data.status} · ${data.jobs_found} individual jobs found · ${data.matched_jobs} matched threshold`;
+        statusEl.textContent = `${statusMessages[data.status] || data.status} · ${data.jobs_found} individual postings discovered · ${data.matched_jobs} passed match threshold (>= 75%)`;
       }
 
       if (data.status === 'COMPLETED' || data.status === 'FAILED') {
         clearInterval(state.pollTimer);
         await loadResults(data);
+        setStep(4);
         hide('stepProgress');
         show('stepResults');
         setLoading('startSearchBtn', 'searchSpinner', false);
@@ -296,10 +379,10 @@ function pollStatus() {
   }, 2000);
 }
 
-// --- Continue Paused Application Session ---
+// --- Continue Paused Session ---
 window.continueSession = async function(sessionId) {
   try {
-    toast('Resuming application session...');
+    toast('Resuming application session in browser...');
     const res = await fetch(`${API}/applications/continue`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -317,6 +400,7 @@ window.continueSession = async function(sessionId) {
     } else {
       toast(`Application could not be completed: ${data.reason}`, 'error');
     }
+    
     // Refresh results
     if (state.runId) {
       const summaryRes = await fetch(`${API}/application-summary?run_id=${state.runId}`);
@@ -330,7 +414,7 @@ window.continueSession = async function(sessionId) {
   }
 };
 
-// --- Results ---
+// --- Load Results & Update Executive Dashboard ---
 async function loadResults(summary) {
   const statApplied = document.getElementById('statApplied');
   const statManual = document.getElementById('statManual');
@@ -347,18 +431,18 @@ async function loadResults(summary) {
     banner.classList.remove('hidden', 'success', 'warning', 'error');
     if (summary.email_sent) {
       banner.classList.add('success');
-      banner.innerHTML = `✅ Full application summary email sent to your inbox.`;
+      banner.innerHTML = `✅ Full application summary email dispatched to <strong>${document.getElementById('email').value}</strong>.`;
     } else if (summary.email_status === 'NOT_CONFIGURED') {
       banner.classList.add('warning');
       banner.innerHTML = `
-        ⚠️ <strong>Email saved locally</strong> — SMTP not configured in .env.
-        ${summary.email_log_url ? ` <a href="${summary.email_log_url}" target="_blank" style="color:#6366f1;text-decoration:underline;">View saved HTML report</a>` : ''}
+        ⚠️ <strong>Email saved locally</strong> — SMTP credentials not configured in .env.
+        ${summary.email_log_url ? ` <a href="${summary.email_log_url}" target="_blank" style="color:#a5b4fc;text-decoration:underline;margin-left:8px;font-weight:600;">Open Saved HTML Report ↗</a>` : ''}
       `;
     } else if (summary.email_status === 'FAILED') {
       banner.classList.add('error');
       banner.innerHTML = `
         ❌ <strong>Email dispatch issue:</strong> ${summary.email_note || 'Unknown error'}
-        ${summary.email_log_url ? ` · <a href="${summary.email_log_url}" target="_blank">View saved HTML report</a>` : ''}
+        ${summary.email_log_url ? ` · <a href="${summary.email_log_url}" target="_blank" style="color:#fca5a5;text-decoration:underline;">View saved report ↗</a>` : ''}
       `;
     } else {
       banner.classList.add('warning');
@@ -374,21 +458,30 @@ async function loadResults(summary) {
       const tbody = document.getElementById('applicationsTable');
       if (tbody) {
         if (!data.applications || data.applications.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="6" class="empty">No applications processed in this batch</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No applications processed in this batch</td></tr>';
         } else {
-          tbody.innerHTML = data.applications.map(a => `
-            <tr>
-              <td><strong>${a.company}</strong></td>
-              <td>${a.job_title}</td>
-              <td>
-                ${statusBadge(a.status)}
-                ${a.error ? `<br><small class="text-muted" style="margin-top:4px;display:inline-block;font-size:0.75rem;">${a.error}</small>` : ''}
-              </td>
-              <td><span class="badge ${a.match_score >= 75 ? 'badge-success' : 'badge-warning'}">${a.match_score ?? '—'}%</span></td>
-              <td>${a.job_url ? `<a href="${a.job_url}" target="_blank" rel="noopener" class="btn-link" style="font-size:0.8rem;">Open Job ↗</a>` : '—'}</td>
-              <td>${a.applied_at ? new Date(a.applied_at).toLocaleTimeString() : '—'}</td>
-            </tr>
-          `).join('');
+          tbody.innerHTML = data.applications.map(a => {
+            const scoreClass = (a.match_score >= 75) ? 'high' : 'mid';
+            return `
+              <tr>
+                <td><strong style="color:#ffffff; font-weight:700;">${a.company}</strong></td>
+                <td>
+                  <span style="font-weight:600; color:#f1f5f9;">${a.job_title}</span>
+                  ${a.error ? `<br><span style="color:#f87171; font-size:0.75rem; margin-top:4px; display:inline-block;">⚠️ ${a.error}</span>` : ''}
+                </td>
+                <td>${statusBadge(a.status)}</td>
+                <td><span class="score-pill ${scoreClass}">${a.match_score ?? '—'}%</span></td>
+                <td>
+                  ${a.job_url 
+                    ? `<a href="${a.job_url}" target="_blank" rel="noopener" class="btn-ghost-sm" style="font-size:0.75rem; padding:0.25rem 0.6rem;">Visit ATS ↗</a>` 
+                    : '—'}
+                </td>
+                <td style="color:#94a3b8; font-size:0.8rem; font-family:'JetBrains Mono', monospace;">
+                  ${a.applied_at ? new Date(a.applied_at).toLocaleTimeString() : '—'}
+                </td>
+              </tr>
+            `;
+          }).join('');
         }
       }
     }
@@ -396,20 +489,32 @@ async function loadResults(summary) {
     toast('Could not load applications list', 'error');
   }
 
-  // Manual actions
+  // Manual actions container
   const manualList = document.getElementById('manualList');
   if (manualList) {
     if (!summary.pending_manual_jobs || summary.pending_manual_jobs.length === 0) {
-      manualList.innerHTML = '<p class="empty">No manual actions required</p>';
+      manualList.innerHTML = `
+        <div class="empty-state-card">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
+          <p>No human intervention required. All qualifying applications processed autonomously.</p>
+        </div>
+      `;
     } else {
       manualList.innerHTML = summary.pending_manual_jobs.map(j => `
-        <div class="manual-item" style="border-left:4px solid #f59e0b;padding:12px;margin-bottom:12px;background:rgba(245,158,11,0.05);border-radius:4px;">
-          <h4 style="margin:0 0 4px 0;">${j.company}</h4>
-          <p style="margin:0 0 8px 0;font-size:0.875rem;color:#d97706;"><strong>Reason:</strong> ${j.reason}</p>
-          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-            <a href="${j.job_url}" target="_blank" rel="noopener" class="btn btn-secondary" style="font-size:0.8rem;padding:4px 10px;text-decoration:none;display:inline-block;">Open & Apply Directly ↗</a>
+        <div class="manual-item-card">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <h4>${j.company}</h4>
+            <span class="badge badge-warning">Action Required</span>
+          </div>
+          <p class="manual-reason"><strong>Reason:</strong> ${j.reason}</p>
+          <div class="manual-action-btns">
+            <a href="${j.job_url}" target="_blank" rel="noopener" class="btn btn-secondary" style="font-size:0.82rem; padding:0.45rem 0.95rem;">
+              Open ATS Directly ↗
+            </a>
             ${j.browser_session_id ? `
-              <button class="btn btn-primary" onclick="continueSession('${j.browser_session_id}')" style="font-size:0.8rem;padding:4px 10px;">Continue Application</button>
+              <button class="btn btn-primary" onclick="continueSession('${j.browser_session_id}')" style="font-size:0.82rem; padding:0.45rem 0.95rem;">
+                ⚡ Resume Application Session
+              </button>
             ` : ''}
           </div>
         </div>
@@ -418,25 +523,29 @@ async function loadResults(summary) {
   }
 }
 
-// --- Tabs ---
-document.querySelectorAll('.tab').forEach(tab => {
+// --- Tab Controller ---
+document.querySelectorAll('.tab-btn').forEach(tab => {
   tab.addEventListener('click', () => {
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.tab-btn').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content-panel').forEach(p => p.classList.remove('active'));
+    
     tab.classList.add('active');
-    const panel = document.getElementById(`tab${tab.dataset.tab.charAt(0).toUpperCase() + tab.dataset.tab.slice(1)}`);
+    const panelId = `tab${tab.dataset.tab.charAt(0).toUpperCase() + tab.dataset.tab.slice(1)}`;
+    const panel = document.getElementById(panelId);
     if (panel) panel.classList.add('active');
   });
 });
 
-// --- New run ---
+// --- Start New Run ---
 const newRunBtn = document.getElementById('newRunBtn');
 if (newRunBtn) {
   newRunBtn.addEventListener('click', () => {
+    setStep(2);
     hide('stepResults');
     show('stepSearch');
     state.runId = null;
   });
 }
 
+// Initialize on page load
 init();

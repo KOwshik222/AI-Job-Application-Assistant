@@ -42,6 +42,9 @@ CONFIRMATION_PATTERNS = [
     r"your\s+application\s+was\s+sent",
     r"thanks\s+for\s+your\s+interest",
     r"confirmation\s+(?:number|id|code|#)\s*:\s*[\w-]+",
+    r"application\s+complete",
+    r"you(?:'ve|\s+have)\s+applied",
+    r"your\s+submission\s+(?:has\s+been\s+)?received",
 ]
 
 CONFIRMATION_URL_PATTERNS = [
@@ -52,6 +55,9 @@ CONFIRMATION_URL_PATTERNS = [
     r"/success",
     r"/applied",
     r"/submitted",
+    r"/application-complete",
+    r"/apply/complete",
+    r"/application-submitted",
 ]
 
 
@@ -272,7 +278,68 @@ class GenericATSAdapter(BaseApplicationAdapter):
                     except Exception:
                         continue
 
-        # 5. Look for submit button
+        # 5. Location / City
+        locations = self.profile.get("locations", [])
+        location_value = locations[0] if locations else ""
+        if location_value:
+            for sel in ['input[name*="location" i]', 'input[name*="city" i]', 'input[placeholder*="location" i]', 'input[placeholder*="city" i]']:
+                el = await self.page.query_selector(sel)
+                if el and await el.is_visible():
+                    try:
+                        await el.fill(location_value)
+                        break
+                    except Exception:
+                        continue
+
+        # 6. LinkedIn URL (only if provided in profile)
+        linkedin_url = self.profile.get("linkedin_url", "")
+        if linkedin_url:
+            for sel in ['input[name*="linkedin" i]', 'input[placeholder*="linkedin" i]', 'input[id*="linkedin" i]']:
+                el = await self.page.query_selector(sel)
+                if el and await el.is_visible():
+                    try:
+                        await el.fill(linkedin_url)
+                        break
+                    except Exception:
+                        continue
+
+        # 7. GitHub URL (only if provided)
+        github_url = self.profile.get("github_url", "")
+        if github_url:
+            for sel in ['input[name*="github" i]', 'input[placeholder*="github" i]', 'input[id*="github" i]']:
+                el = await self.page.query_selector(sel)
+                if el and await el.is_visible():
+                    try:
+                        await el.fill(github_url)
+                        break
+                    except Exception:
+                        continue
+
+        # 8. Portfolio URL (only if provided)
+        portfolio_url = self.profile.get("portfolio_url", "")
+        if portfolio_url:
+            for sel in ['input[name*="portfolio" i]', 'input[name*="website" i]', 'input[placeholder*="portfolio" i]', 'input[placeholder*="website" i]']:
+                el = await self.page.query_selector(sel)
+                if el and await el.is_visible():
+                    try:
+                        await el.fill(portfolio_url)
+                        break
+                    except Exception:
+                        continue
+
+        # 9. Years of experience
+        experience = self.profile.get("experience")
+        if experience is not None:
+            for sel in ['input[name*="experience" i]', 'input[placeholder*="experience" i]', 'input[placeholder*="years" i]']:
+                el = await self.page.query_selector(sel)
+                if el and await el.is_visible():
+                    try:
+                        await el.fill(str(experience))
+                        break
+                    except Exception:
+                        continue
+
+        # 10. Look for submit button
         submit_selectors = [
             'button[type="submit"]',
             'input[type="submit"]',
@@ -541,18 +608,20 @@ async def apply_job_tool(
                     "browser_session_id": "",
                 })
 
-            # Submit was clicked but success could not be verified
-            logger.warning("❌ Submission could not be verified for %s at %s", company, application_url)
+            # Submit was clicked but success could not be verified —
+            # treat as MANUAL since we can't confirm the application went through
+            logger.warning("⚠️ Submission could not be verified for %s at %s", company, application_url)
             return json.dumps({
-                "status": "FAILED",
+                "status": "MANUAL_ACTION_REQUIRED",
                 "company": company,
                 "job_title": job_title,
                 "application_url": application_url,
-                "reason": "Application submission could not be verified from page response",
+                "reason": "Form submitted but confirmation could not be verified — please check application status manually",
                 "confirmation": "",
                 "submitted_at": None,
                 "resume_hash": resume_hash,
                 "resume_used": str(resume_path.resolve()),
+                "browser_session_id": "",
             })
 
         except Exception as exc:

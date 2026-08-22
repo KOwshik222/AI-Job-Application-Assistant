@@ -46,7 +46,10 @@ class MatchedJob(JobListing):
     match_rationale: str = ""
 
 
-ApplicationStatus = Literal["SUCCESS", "FAILED", "PENDING_MANUAL", "ELIGIBLE", "NOT_MATCHED", "QUEUED"]
+ApplicationStatus = Literal[
+    "SUCCESS", "FAILED", "PENDING_MANUAL", "ELIGIBLE",
+    "NOT_MATCHED", "QUEUED", "LLM_QUOTA_EXCEEDED", "IN_PROGRESS",
+]
 ManualStatus = Literal["PENDING_MANUAL_ACTION"]
 
 
@@ -147,6 +150,9 @@ class ApplicationSummaryResponse(BaseModel):
     email_log_url: str | None = None
     jobs_found: int = 0
     matched_jobs: int = 0
+    not_matched: int = 0
+    queued: int = 0
+    llm_quota_unprocessed: int = 0
     errors: list[str] = Field(default_factory=list)
 
 

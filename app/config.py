@@ -26,7 +26,9 @@ class Settings(BaseSettings):
     resume_storage_path: str = "./storage/resumes"
     chroma_persist_dir: str = "./data/chroma"
 
+    #Guardr
     max_applications_per_day: int = 20
+    max_applications_per_run: int = 10
     match_threshold: int = 75
     same_company_cooldown_days: int = 30
 

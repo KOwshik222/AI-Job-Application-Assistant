@@ -63,7 +63,7 @@ async def run_workflow(
         "pending_manual_jobs": [],
         "failed_jobs": [],
         "match_threshold": request.match_threshold or settings.match_threshold,
-        "max_applications_per_run": request.max_applications or settings.max_applications_per_day,
+        "max_applications_per_run": request.max_applications or settings.max_applications_per_run,
         "applications_attempted": 0,
         "next_agent": "",
         "application_complete": False,

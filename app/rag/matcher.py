@@ -1,6 +1,7 @@
 """LLM-based resume-job matching via RAG with strict production error handling."""
 
 import logging
+import re
 from langchain_core.prompts import ChatPromptTemplate
 from langsmith import traceable
 from pydantic import BaseModel, Field
@@ -13,6 +14,37 @@ from app.schemas import JobListing, MatchedJob, UserProfile
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+# Module-level quota flag — set after first Gemini 429 to prevent
+# hammering a quota-exhausted API for every remaining job.
+_gemini_quota_exhausted: bool = False
+
+
+def is_quota_exhausted() -> bool:
+    """Check whether Gemini quota has been exhausted in this process."""
+    return _gemini_quota_exhausted
+
+
+def reset_quota_flag() -> None:
+    """Reset the quota flag (for testing or new runs)."""
+    global _gemini_quota_exhausted
+    _gemini_quota_exhausted = False
+
+
+def _is_quota_error(exc: Exception) -> bool:
+    """Detect Gemini 429 / RESOURCE_EXHAUSTED errors in exception chains."""
+    exc_str = str(exc).lower()
+    if "429" in exc_str or "resource_exhausted" in exc_str or "quota" in exc_str:
+        return True
+    if re.search(r"rate.?limit", exc_str):
+        return True
+    # Check wrapped causes
+    cause = getattr(exc, "__cause__", None) or getattr(exc, "__context__", None)
+    if cause and cause is not exc:
+        cause_str = str(cause).lower()
+        if "429" in cause_str or "resource_exhausted" in cause_str or "quota" in cause_str:
+            return True
+    return False
 
 
 class MatchResult(BaseModel):
@@ -75,12 +107,36 @@ def match_job_to_resume(
     """Evaluate match score and rationale between job description and resume.
     
     In production mode: Uses configured LLM. If LLM fails, returns MATCHING_FAILED (never silently falls back).
+    If Gemini quota is exhausted (429), returns LLM_QUOTA_EXCEEDED (distinct from MATCHING_FAILED).
     In demo mode: Clearly identified demo matcher.
     """
+    global _gemini_quota_exhausted
+
     if settings.is_demo_mode:
         logger.info("DEMO MODE: Evaluating match via demo keyword matcher.")
         resume_text = get_resume_text(resume_id)
         return keyword_match_job(job, user_profile, resume_text)
+
+    # Short-circuit if quota was already exhausted earlier in this run
+    if _gemini_quota_exhausted:
+        logger.warning(
+            "LLM_QUOTA_EXCEEDED: Skipping LLM match for %s (%s) — Gemini quota exhausted",
+            job.company, job.title,
+        )
+        return MatchedJob(
+            job_id=job.job_id,
+            title=job.title,
+            company=job.company,
+            location=job.location,
+            description=job.description,
+            application_url=job.application_url,
+            source=job.source,
+            posted_at=job.posted_at,
+            match_score=0,
+            matching_skills=[],
+            missing_skills=[],
+            match_rationale="LLM_QUOTA_EXCEEDED: Gemini API quota exhausted. Resume matching paused until quota is available.",
+        )
 
     try:
         retriever = get_retriever(resume_id, k=6)
@@ -127,6 +183,28 @@ def match_job_to_resume(
             match_rationale=result.match_rationale,
         )
     except Exception as exc:
+        # Detect Gemini 429 / RESOURCE_EXHAUSTED
+        if _is_quota_error(exc):
+            _gemini_quota_exhausted = True
+            logger.error(
+                "GEMINI QUOTA EXHAUSTED (429) for %s (%s): %s — stopping further LLM calls",
+                job.company, job.title, exc,
+            )
+            return MatchedJob(
+                job_id=job.job_id,
+                title=job.title,
+                company=job.company,
+                location=job.location,
+                description=job.description,
+                application_url=job.application_url,
+                source=job.source,
+                posted_at=job.posted_at,
+                match_score=0,
+                matching_skills=[],
+                missing_skills=[],
+                match_rationale="LLM_QUOTA_EXCEEDED: Gemini API quota exhausted (429 RESOURCE_EXHAUSTED). Resume matching paused until quota is available.",
+            )
+
         logger.error("LLM matching failed in PRODUCTION mode for %s (%s): %s", job.company, job.title, exc)
         return MatchedJob(
             job_id=job.job_id,
@@ -142,4 +220,5 @@ def match_job_to_resume(
             missing_skills=[],
             match_rationale=f"MATCHING_FAILED: LLM evaluation error ({exc}). Candidate will not be submitted.",
         )
+
 

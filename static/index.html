@@ -3,183 +3,468 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description" content="Premium AI Job Application Assistant that automates your job search, matching, and applications." />
-  <title>AI Job Application Assistant</title>
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%236366f1'/><text x='50' y='65' font-family='sans-serif' font-size='50' font-weight='bold' fill='white' text-anchor='middle'>JA</text></svg>" />
-  <link rel="stylesheet" href="/assets/css/app.css" />
+  <meta name="description" content="Autonomous AI Job Application Assistant powered by LangGraph, MCP Protocol, RAG Vector Matching, and Human-in-the-Loop Browser Automation." />
+  <title>Autonomous AI Job Application Assistant</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><defs><linearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='100%25'><stop offset='0%25' stop-color='%236366f1'/><stop offset='50%25' stop-color='%238b5cf6'/><stop offset='100%25' stop-color='%23ec4899'/></linearGradient></defs><rect width='100' height='100' rx='28' fill='url(%23g)'/><path d='M32 30h14v24c0 6.6 4.4 11 11 11s11-4.4 11-11V30h14v25c0 14.4-9.6 24-25 24s-25-9.6-25-24V30z' fill='white'/></svg>" />
+  
+  <!-- Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  
+  <link rel="stylesheet" href="/assets/css/app.css" />
 </head>
 <body>
-  <div class="app">
-    <header class="header">
-      <div class="header-inner">
+  <!-- Ambient background glow elements -->
+  <div class="ambient-glow glow-1"></div>
+  <div class="ambient-glow glow-2"></div>
+  <div class="ambient-glow glow-3"></div>
+
+  <div class="app-container">
+    <!-- Top Navigation Bar -->
+    <header class="top-nav">
+      <div class="nav-inner">
         <div class="brand">
-          <div class="brand-icon">JA</div>
-          <div>
-            <h1>Job Application Assistant</h1>
-            <p class="subtitle">LangGraph · RAG · MCP · LangSmith</p>
+          <div class="brand-logo">
+            <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect width="32" height="32" rx="8" fill="url(#brandGrad)" />
+              <path d="M10 9H14V17C14 19.2 15.5 20.7 17.7 20.7C19.9 20.7 21.4 19.2 21.4 17V9H25.4V17.3C25.4 22.2 22.2 25.4 17.7 25.4C13.2 25.4 10 22.2 10 17.3V9Z" fill="white" />
+              <defs>
+                <linearGradient id="brandGrad" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
+                  <stop stop-color="#6366F1" />
+                  <stop offset="0.5" stop-color="#8B5CF6" />
+                  <stop offset="1" stop-color="#D946EF" />
+                </linearGradient>
+              </defs>
+            </svg>
+            <div class="pulse-ring"></div>
+          </div>
+          <div class="brand-text">
+            <div class="title-row">
+              <h1>Job Application Assistant</h1>
+              <span class="version-tag">v2.5 Enterprise</span>
+            </div>
+            <p class="subtitle">LangGraph Multi-Agent · RAG Matching · Real MCP Client · Resumable Browser</p>
           </div>
         </div>
-        <div class="header-badge" id="modeBadge">Loading...</div>
+
+        <div class="nav-controls">
+          <div class="system-status-chip">
+            <span class="status-indicator-dot"></span>
+            <span id="modeBadge" class="header-badge">Connecting…</span>
+          </div>
+        </div>
       </div>
     </header>
 
-    <main class="main">
-      <!-- Step 1: Upload & Profile -->
-      <section class="card fade-in" id="stepProfile">
-        <div class="card-header">
-          <span class="step-num">1</span>
-          <h2>Upload Resume & Set Preferences</h2>
+    <!-- Main Workspace -->
+    <main class="workspace">
+      
+      <!-- Stepper Navigation -->
+      <div class="workflow-stepper">
+        <div class="step-indicator active" id="indicatorStep1">
+          <div class="step-circle"><span>1</span></div>
+          <div class="step-meta">
+            <span class="step-title">Profile & Resume</span>
+            <span class="step-desc">Upload & Target</span>
+          </div>
         </div>
-        <form id="profileForm" class="form-grid">
-          <div class="form-group">
-            <label for="fullName">Full Name</label>
-            <input type="text" id="fullName" required placeholder="John Doe" value="Jane Doe" />
+        <div class="stepper-line" id="line1"></div>
+        <div class="step-indicator" id="indicatorStep2">
+          <div class="step-circle"><span>2</span></div>
+          <div class="step-meta">
+            <span class="step-title">Pre-Flight Review</span>
+            <span class="step-desc">Integrity Check</span>
           </div>
-          <div class="form-group">
-            <label for="phone">Phone Number</label>
-            <input type="text" id="phone" required placeholder="+1 234 567 8900" value="+1 234 567 8900" />
+        </div>
+        <div class="stepper-line" id="line2"></div>
+        <div class="step-indicator" id="indicatorStep3">
+          <div class="step-circle"><span>3</span></div>
+          <div class="step-meta">
+            <span class="step-title">Autonomous Agents</span>
+            <span class="step-desc">Live Orchestration</span>
           </div>
-          <div class="form-group full">
-            <label for="email">Email</label>
-            <input type="email" id="email" required placeholder="you@example.com" value="demo@example.com" />
+        </div>
+        <div class="stepper-line" id="line3"></div>
+        <div class="step-indicator" id="indicatorStep4">
+          <div class="step-circle"><span>4</span></div>
+          <div class="step-meta">
+            <span class="step-title">Mission Report</span>
+            <span class="step-desc">Audit & Actions</span>
           </div>
-          <div class="form-group full">
-            <label for="resumeFile">Resume PDF <span class="hint">(original file — never modified)</span></label>
-            <div class="file-drop" id="fileDrop">
+        </div>
+      </div>
+
+      <!-- STEP 1: Upload Resume & Set Preferences -->
+      <section class="glass-card fade-in" id="stepProfile">
+        <div class="card-headline">
+          <div class="card-icon-badge">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+          </div>
+          <div>
+            <h2>Resume & Target Configuration</h2>
+            <p class="section-desc">Provide your authentic resume and search criteria. Your original PDF is verified by SHA-256 and never modified.</p>
+          </div>
+        </div>
+
+        <form id="profileForm" class="form-layout">
+          <!-- Resume Upload Zone -->
+          <div class="form-group full-width">
+            <label class="field-label">
+              <span>Original Resume (PDF)</span>
+              <span class="field-badge secure"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> SHA-256 Hash Protected</span>
+            </label>
+            
+            <div class="file-dropzone" id="fileDrop">
               <input type="file" id="resumeFile" accept=".pdf" required />
-              <p>Drop PDF here or click to browse</p>
-              <p class="file-name" id="fileName">No file selected</p>
+              <div class="dropzone-content">
+                <div class="upload-icon-circle">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                </div>
+                <div class="dropzone-text">
+                  <p class="dropzone-primary-text">Drag & drop your resume PDF here, or <span class="highlight">browse</span></p>
+                  <p class="dropzone-sub-text">Supported format: .PDF (Original binary preserved intact)</p>
+                </div>
+                <div class="file-selected-chip" id="fileName">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path><polyline points="13 2 13 9 20 9"></polyline></svg>
+                  <span>No file selected</span>
+                </div>
+              </div>
             </div>
-            <button type="button" class="btn-link" id="useSampleBtn">Use sample resume</button>
+
+            <div class="quick-helpers">
+              <button type="button" class="btn-ghost-sm" id="useSampleBtn">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path></svg>
+                Load Sample Resume
+              </button>
+              <span class="helper-hint">Instant demo with sample profile</span>
+            </div>
           </div>
-          <div class="form-group">
-            <label for="role">Desired Role</label>
-            <input type="text" id="role" required value="Java Developer" />
+
+          <!-- Personal Information -->
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="fullName" class="field-label">Full Name</label>
+              <div class="input-wrapper">
+                <input type="text" id="fullName" required placeholder="Alex Mercer" value="Jane Doe" />
+              </div>
+            </div>
+            
+            <div class="form-group">
+              <label for="phone" class="field-label">Phone Number</label>
+              <div class="input-wrapper">
+                <input type="text" id="phone" required placeholder="+1 234 567 8900" value="+1 234 567 8900" />
+              </div>
+            </div>
+
+            <div class="form-group full-width">
+              <label for="email" class="field-label">
+                <span>Notification Email</span>
+                <span class="field-hint">Application summary dispatched here</span>
+              </label>
+              <div class="input-wrapper">
+                <input type="email" id="email" required placeholder="alex.mercer@example.com" value="demo@example.com" />
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label for="role" class="field-label">
+                <span>Target Role</span>
+                <span class="field-badge info">Semantic Expansion</span>
+              </label>
+              <div class="input-wrapper">
+                <input type="text" id="role" required value="AI Developer" placeholder="e.g. AI Developer, ML Engineer" />
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label for="experience" class="field-label">
+                <span>Experience Level</span>
+                <span class="field-hint">Years of experience</span>
+              </label>
+              <div class="input-wrapper">
+                <input type="number" id="experience" min="0" max="40" value="1" />
+              </div>
+            </div>
+
+            <div class="form-group full-width">
+              <label for="skills" class="field-label">
+                <span>Key Technical Skills</span>
+                <span class="field-hint">Comma-separated</span>
+              </label>
+              <div class="input-wrapper">
+                <input type="text" id="skills" value="Python, Machine Learning, Generative AI, LangChain, Computer Vision" />
+              </div>
+            </div>
+
+            <div class="form-group full-width">
+              <label for="locations" class="field-label">
+                <span>Preferred Locations</span>
+                <span class="field-hint">Comma-separated cities or Remote</span>
+              </label>
+              <div class="input-wrapper">
+                <input type="text" id="locations" value="Hyderabad, Bengaluru, Pune, Remote" />
+              </div>
+            </div>
           </div>
-          <div class="form-group">
-            <label for="experience">Experience (years)</label>
-            <input type="number" id="experience" min="0" max="40" value="3" />
-          </div>
-          <div class="form-group full">
-            <label for="skills">Skills <span class="hint">(comma-separated)</span></label>
-            <input type="text" id="skills" value="Java, Spring Boot, Microservices, SQL" />
-          </div>
-          <div class="form-group full">
-            <label for="locations">Preferred Locations <span class="hint">(comma-separated)</span></label>
-            <input type="text" id="locations" value="Pune, Mumbai, Bangalore" />
-          </div>
-          <div class="form-actions full">
-            <button type="submit" class="btn btn-primary" id="uploadBtn">
-              <span class="btn-text">Upload Resume & Continue</span>
+
+          <div class="form-submit-row">
+            <button type="submit" class="btn btn-primary btn-glow" id="uploadBtn">
+              <span class="btn-text">Upload Resume & Index Vectors</span>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"></path><path d="m12 5 7 7-7 7"></path></svg>
               <span class="spinner hidden" id="uploadSpinner"></span>
             </button>
           </div>
         </form>
       </section>
 
-      <!-- Step 2: Run Workflow -->
-      <section class="card hidden fade-in" id="stepSearch">
-        <div class="card-header">
-          <span class="step-num">2</span>
-          <h2>Start Job Search & Apply</h2>
+      <!-- STEP 2: Pre-Flight Launchpad -->
+      <section class="glass-card hidden fade-in" id="stepSearch">
+        <div class="card-headline">
+          <div class="card-icon-badge success">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
+          </div>
+          <div>
+            <h2>Launch Autonomous Application Workflow</h2>
+            <p class="section-desc">Resume indexed successfully. Supervisor agent is ready to discover, match, and apply.</p>
+          </div>
         </div>
-        <div class="resume-info" id="resumeInfo"></div>
-        <p class="desc">
-          The supervisor agent will search jobs, match your resume via RAG, apply automatically where possible,
-          and email you a summary. Applications use your <strong>original PDF</strong> only.
-        </p>
-        <button class="btn btn-primary btn-lg" id="startSearchBtn">
-          <span class="btn-text">Start Job Application Workflow</span>
-          <span class="spinner hidden" id="searchSpinner"></span>
-        </button>
+
+        <div class="resume-verification-card" id="resumeInfo">
+          <!-- Dynamically populated -->
+        </div>
+
+        <div class="mission-briefing-grid">
+          <div class="briefing-item">
+            <div class="briefing-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg></div>
+            <div>
+              <h4>Targeted ATS Discovery</h4>
+              <p>Searches direct Lever, Greenhouse, SmartRecruiters, Workday, and Ashby postings.</p>
+            </div>
+          </div>
+          <div class="briefing-item">
+            <div class="briefing-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg></div>
+            <div>
+              <h4>Weighted RAG Evaluation</h4>
+              <p>Role (25%), Skills (30%), Experience (20%), Projects (15%), Education (5%). Threshold: 75%.</p>
+            </div>
+          </div>
+          <div class="briefing-item">
+            <div class="briefing-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg></div>
+            <div>
+              <h4>Human-in-the-Loop Security</h4>
+              <p>Headful browser pauses automatically for CAPTCHA, Login, or OTP, allowing 1-click continuation.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="launch-actions">
+          <button class="btn btn-primary btn-lg btn-glow" id="startSearchBtn">
+            <span class="btn-text">Start Autonomous Application Workflow</span>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+            <span class="spinner hidden" id="searchSpinner"></span>
+          </button>
+        </div>
       </section>
 
-      <!-- Step 3: Progress -->
-      <section class="card hidden fade-in" id="stepProgress">
-        <div class="card-header">
-          <span class="step-num">3</span>
-          <h2>Workflow Progress</h2>
-        </div>
-        <div class="pipeline">
-          <div class="pipeline-step" data-agent="job_search">
-            <div class="pipeline-dot"></div>
-            <span>Job Search</span>
+      <!-- STEP 3: Live Agent Orchestration Pipeline -->
+      <section class="glass-card hidden fade-in" id="stepProgress">
+        <div class="card-headline">
+          <div class="card-icon-badge active-glow">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
           </div>
-          <div class="pipeline-step" data-agent="resume_match">
-            <div class="pipeline-dot"></div>
-            <span>Resume Match</span>
-          </div>
-          <div class="pipeline-step" data-agent="application">
-            <div class="pipeline-dot"></div>
-            <span>Apply</span>
-          </div>
-          <div class="pipeline-step" data-agent="notification">
-            <div class="pipeline-dot"></div>
-            <span>Notify</span>
+          <div>
+            <h2>Autonomous Agent Orchestration</h2>
+            <p class="section-desc">LangGraph Multi-Agent System is executing across specialized nodes.</p>
           </div>
         </div>
-        <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
-        <p class="status-text" id="statusText">Initializing agents...</p>
+
+        <!-- Pipeline Nodes -->
+        <div class="agent-pipeline-container">
+          <div class="pipeline-track">
+            <div class="track-fill" id="trackFill"></div>
+          </div>
+          
+          <div class="pipeline-nodes">
+            <div class="pipeline-node active" data-agent="job_search">
+              <div class="node-icon">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+              </div>
+              <div class="node-details">
+                <span class="node-label">Discovery Agent</span>
+                <span class="node-sub">ATS & Tavily MCP</span>
+              </div>
+            </div>
+
+            <div class="pipeline-node" data-agent="resume_match">
+              <div class="node-icon">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+              </div>
+              <div class="node-details">
+                <span class="node-label">RAG Matcher</span>
+                <span class="node-sub">Gemini + Vector RAG</span>
+              </div>
+            </div>
+
+            <div class="pipeline-node" data-agent="application">
+              <div class="node-icon">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
+              </div>
+              <div class="node-details">
+                <span class="node-label">Application Agent</span>
+                <span class="node-sub">Playwright + HITL</span>
+              </div>
+            </div>
+
+            <div class="pipeline-node" data-agent="notification">
+              <div class="node-icon">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg>
+              </div>
+              <div class="node-details">
+                <span class="node-label">Audit & Dispatch</span>
+                <span class="node-sub">Summary Email Log</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Terminal Progress Output -->
+        <div class="agent-live-console">
+          <div class="console-header">
+            <div class="console-traffic-lights">
+              <span></span><span></span><span></span>
+            </div>
+            <span class="console-title">Live Agent Telemetry</span>
+            <span class="live-pill">LIVE</span>
+          </div>
+          <div class="console-body">
+            <div class="console-line">
+              <span class="log-prefix">&gt;</span>
+              <span class="log-text" id="statusText">Initializing supervisor coordinator agent…</span>
+            </div>
+          </div>
+        </div>
       </section>
 
-      <!-- Step 4: Results -->
-      <section class="card hidden fade-in" id="stepResults">
-        <div class="card-header">
-          <span class="step-num">4</span>
-          <h2>Application Summary</h2>
+      <!-- STEP 4: Executive Mission Report & Results -->
+      <section class="glass-card hidden fade-in" id="stepResults">
+        <div class="card-headline">
+          <div class="card-icon-badge purple">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+          </div>
+          <div>
+            <h2>Application Run Report</h2>
+            <p class="section-desc">Summary of matched positions, submitted applications, and manual action items.</p>
+          </div>
         </div>
+
         <div id="emailBanner" class="email-banner hidden"></div>
-        <div class="stats-grid" id="statsGrid">
-          <div class="stat success">
-            <div class="stat-value" id="statApplied">0</div>
-            <div class="stat-label">Applied</div>
+
+        <!-- Metric KPI Cards -->
+        <div class="stats-overview-grid" id="statsGrid">
+          <div class="kpi-card success-kpi">
+            <div class="kpi-icon-wrap">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>
+            </div>
+            <div class="kpi-data">
+              <div class="kpi-value" id="statApplied">0</div>
+              <div class="kpi-label">Verified Submitted</div>
+            </div>
           </div>
-          <div class="stat warning">
-            <div class="stat-value" id="statManual">0</div>
-            <div class="stat-label">Manual Action</div>
+
+          <div class="kpi-card warning-kpi">
+            <div class="kpi-icon-wrap">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+            </div>
+            <div class="kpi-data">
+              <div class="kpi-value" id="statManual">0</div>
+              <div class="kpi-label">Manual Action Required</div>
+            </div>
           </div>
-          <div class="stat danger">
-            <div class="stat-value" id="statFailed">0</div>
-            <div class="stat-label">Failed</div>
+
+          <div class="kpi-card info-kpi">
+            <div class="kpi-icon-wrap">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
+            </div>
+            <div class="kpi-data">
+              <div class="kpi-value" id="statMatched">0</div>
+              <div class="kpi-label">Matched Positions (&ge; 75%)</div>
+            </div>
           </div>
-          <div class="stat info">
-            <div class="stat-value" id="statMatched">0</div>
-            <div class="stat-label">Matched Jobs</div>
+
+          <div class="kpi-card danger-kpi">
+            <div class="kpi-icon-wrap">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg>
+            </div>
+            <div class="kpi-data">
+              <div class="kpi-value" id="statFailed">0</div>
+              <div class="kpi-label">Failed / Error</div>
+            </div>
           </div>
         </div>
 
-        <div class="tabs">
-          <button class="tab active" data-tab="applications">Applications</button>
-          <button class="tab" data-tab="manual">Manual Actions</button>
-        </div>
+        <!-- Tabbed Dashboard -->
+        <div class="results-dashboard">
+          <div class="dashboard-tabs">
+            <button class="tab-btn active" data-tab="applications">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+              <span>Application Pipeline</span>
+            </button>
+            <button class="tab-btn" data-tab="manual">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+              <span>Manual Actions Required</span>
+            </button>
+          </div>
 
-        <div class="tab-panel active" id="tabApplications">
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr><th>Company</th><th>Job Title</th><th>Status</th><th>Score</th><th>Link</th><th>Time</th></tr>
-              </thead>
-              <tbody id="applicationsTable"><tr><td colspan="6" class="empty">No applications yet</td></tr></tbody>
-            </table>
+          <div class="tab-content-panel active" id="tabApplications">
+            <div class="table-responsive-wrapper">
+              <table class="modern-table">
+                <thead>
+                  <tr>
+                    <th>Company</th>
+                    <th>Role & Posting</th>
+                    <th>Application Status</th>
+                    <th>Match Score</th>
+                    <th>ATS Portal</th>
+                    <th>Timestamp</th>
+                  </tr>
+                </thead>
+                <tbody id="applicationsTable">
+                  <tr><td colspan="6" class="empty-state">No applications processed in this batch</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="tab-content-panel" id="tabManual">
+            <div class="manual-actions-container" id="manualList">
+              <div class="empty-state-card">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
+                <p>No human intervention required. All qualifying applications processed autonomously.</p>
+              </div>
+            </div>
           </div>
         </div>
 
-        <div class="tab-panel" id="tabManual">
-          <div class="manual-list" id="manualList">
-            <p class="empty">No manual actions required</p>
-          </div>
-        </div>
-
-        <div class="form-actions" style="margin-top: 1.5rem;">
-          <button class="btn btn-secondary" id="newRunBtn">Start New Run</button>
+        <div class="dashboard-footer-actions">
+          <button class="btn btn-secondary" id="newRunBtn">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"></polyline><polyline points="23 20 23 14 17 14"></polyline><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"></path></svg>
+            <span>Start New Application Run</span>
+          </button>
         </div>
       </section>
     </main>
 
-    <footer class="footer">
-      <p>Resume is never modified · Human-in-the-loop for CAPTCHA/login · Max 40 applications/day</p>
+    <!-- Footer -->
+    <footer class="app-footer">
+      <div class="footer-content">
+        <div class="footer-badges">
+          <span class="security-chip"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> Original PDF Preserved</span>
+          <span class="security-chip"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg> Human-in-the-Loop Safe</span>
+          <span class="security-chip"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> Rate Limited Daily</span>
+        </div>
+        <p class="copyright">&copy; 2026 AI Job Application Assistant. Engineered with LangGraph, MCP, & ChromaDB.</p>
+      </div>
     </footer>
   </div>
 

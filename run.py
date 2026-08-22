@@ -33,7 +33,7 @@ def main():
 
     print("\n  AI Job Application Assistant")
     print("  http://localhost:8000\n")
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True, log_level="info")
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=False, log_level="info")
 
 
 if __name__ == "__main__":

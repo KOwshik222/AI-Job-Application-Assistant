@@ -83,9 +83,16 @@ class MCPClient:
             from mcp.client.session import ClientSession
             from mcp.client.stdio import StdioServerParameters, stdio_client
 
+            # Propagate key config to the MCP server subprocess env
+            import os
+            env = os.environ.copy()
+            env["BROWSER_HEADLESS"] = str(settings.browser_headless).lower()
+            env["DEMO_MODE"] = str(settings.demo_mode).lower()
+
             server_params = StdioServerParameters(
                 command=settings.mcp_server_command,
                 args=settings.mcp_args_list,
+                env=env,
             )
 
             logger.info(
